@@ -161,6 +161,8 @@
           <th class="num" data-key="lbs_feed_per_head">Lbs Feed/Head</th>
           <th class="num" data-key="pct_of_total_budget">% of Total Budget</th>
           <th class="num" data-key="predicted_weight">Predicted Wt (lbs)</th>
+          <th class="num" data-key="feed_per_head_per_day">Feed/Head/Day</th>
+          <th data-key="expected_close_date">Expected Close</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -171,6 +173,9 @@
     Feed progress and predicted weight are computed from the EasyFeed FoxPro database
     (phase-specific mortality-adjusted head counts) and your Feed Budget's F/G ratios.
     Groups without a FoxPro match yet show blank feed columns.
+    Feed/Head/Day uses a trailing ~10-day average from real bin-scale data (BinMaster/BarnTools/AP)
+    where available; barns without bin-scale coverage yet show an "(est)" rate from the standard
+    Feed Budget for that phase. Expected Close is that rate projected against the remaining Feed Budget.
   </footer>
 </div>
 
@@ -222,6 +227,24 @@ function progressBar(pct) {
   </div>`;
 }
 
+function feedRateCell(r) {
+  if (r.feed_per_head_per_day === null || r.feed_per_head_per_day === undefined) {
+    return '<span class="muted">—</span>';
+  }
+  const val = fmtNum(r.feed_per_head_per_day, 2);
+  const isEstimate = r.feed_rate_source === 'phase_budget_estimate';
+  return isEstimate
+    ? `${val} <span class="muted" style="font-size:11px;">(est)</span>`
+    : val;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '<span class="muted">—</span>';
+  const d = new Date(iso + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return '<span class="muted">—</span>';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 function render() {
   const q = document.getElementById('search').value.trim().toLowerCase();
   let filtered = rows.filter(r => {
@@ -251,9 +274,10 @@ function render() {
       <td class="num">${fmtNum(r.lbs_feed_per_head, 1)}</td>
       <td class="num">${progressBar(r.pct_of_total_budget)}</td>
       <td class="num">${fmtNum(r.predicted_weight, 1)}</td>
+      <td class="num">${feedRateCell(r)}</td>
+      <td>${fmtDate(r.expected_close_date)}</td>
     </tr>
-  `).join('') || `<tr><td colspan="11" class="muted" style="text-align:center; padding:24px;">No groups match.</td></tr>`;
-
+  `).join('') || `<tr><td colspan="13" class="muted" style="text-align:center; padding:24px;">No groups match.</td></tr>`;
   document.querySelectorAll('th').forEach(th => {
     th.querySelector('.arrow')?.remove();
     if (th.dataset.key === sortKey) {
@@ -291,6 +315,9 @@ async function load() {
       lbs_feed_per_head: g.feed ? g.feed.lbs_feed_per_head : null,
       pct_of_total_budget: g.feed ? g.feed.pct_of_total_budget : null,
       predicted_weight: g.feed ? g.feed.predicted_weight : null,
+      feed_per_head_per_day: g.feed ? g.feed.feed_per_head_per_day : null,
+      feed_rate_source: g.feed ? g.feed.feed_rate_source : null,
+      expected_close_date: g.feed ? g.feed.expected_close_date : null,
     }));
 
     document.getElementById('doforms-updated').textContent =
