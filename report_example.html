@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<!--
+  report_example.html
+
+  Minimal starting point for a report hosted on GitHub Pages (or anywhere
+  static) that reads live data straight out of the Supabase feed-data
+  mirror, using Supabase's public REST API and its "anon" API key.
+
+  WHY THIS IS SAFE TO PUT IN A PUBLIC REPO:
+  The "anon" key below is NOT a secret the way a database password is --
+  Supabase explicitly designs it to be embedded in client-side code like
+  this. The actual security boundary is server-side: Row Level Security
+  (RLS) policies on each table in the foxpro_mirror schema, set up by
+  setup_supabase.sql / supabase_sync.py, allow this key to SELECT (read)
+  rows and nothing else -- no INSERT/UPDATE/DELETE grant exists for it
+  anywhere. Worst case if this whole page (anon key included) becomes
+  public: people can read whatever this page could already show them.
+  They can never use it to change data.
+
+  Do NOT put the "service_role" key here instead of "anon" -- service_role
+  bypasses RLS entirely and must never appear in any client-side code.
+
+  SETUP -- fill in these two values from your Supabase project
+  (Project Settings > API):
+-->
+<title>Feed Data Report (example)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  #freshness { color: #666; font-size: 0.9rem; margin-bottom: 1rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  th { background: #f5f5f5; position: sticky; top: 0; }
+  #error { color: #b00020; }
+</style>
+
+<h1>Active Groups (example report)</h1>
+<div id="freshness">Loading...</div>
+<div id="error"></div>
+<table id="report-table">
+  <thead>
+    <tr>
+      <th>Group ID</th>
+      <th>Location</th>
+      <th>Phase</th>
+      <th>Head Count</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody id="report-body"></tbody>
+</table>
+
+<!-- Supabase's JS client, loaded from a public CDN -- no build step needed. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+  // ---- FILL THESE IN (Supabase dashboard: Project Settings > API) ----
+  const SUPABASE_URL = https://ievchqnplgdcxigvsbpk.supabase.co/rest/v1/;
+  const SUPABASE_ANON_KEY = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlldmNocW5wbGdkY3hpZ3ZzYnBrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNzk2MDksImV4cCI6MjEwMzg1NTYwOX0.H1Oib2JJkNlLXcr1rp9l7aemqE53m1sm_2BSAAVXlr8; // the "anon public" key, NOT "service_role"
+  // ----------------------------------------------------------------------
+
+  const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    // Every mirrored table lives in the foxpro_mirror schema, not the
+    // default "public" one -- this tells the client to look there.
+    db: { schema: "foxpro_mirror" },
+  });
+
+  async function loadReport() {
+    const freshnessEl = document.getElementById("freshness");
+    const errorEl = document.getElementById("error");
+    const bodyEl = document.getElementById("report-body");
+
+    // Freshness marker -- see supabase_sync.py's _sync_status table.
+    const { data: statusRows, error: statusError } = await client
+      .from("_sync_status")
+      .select("synced_at")
+      .limit(1);
+    if (!statusError && statusRows && statusRows.length) {
+      const synced = new Date(statusRows[0].synced_at);
+      freshnessEl.textContent = "Data as of " + synced.toLocaleString();
+    } else {
+      freshnessEl.textContent = "";
+    }
+
+    // Pull the group records themselves. Change the columns / table name
+    // here to build a different report -- e.g. .from("m_recipe") or
+    // .from("batch_history"), any table supabase_sync.py mirrors.
+    const { data, error } = await client
+      .from("groups")
+      .select("group_id, location_i, phase_numb, head_count, descriptio")
+      .eq("active", true)
+      .order("group_id");
+
+    if (error) {
+      errorEl.textContent = "Error loading data: " + error.message;
+      return;
+    }
+
+    bodyEl.innerHTML = "";
+    for (const row of data) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${row.group_id ?? ""}</td>
+        <td>${row.location_i ?? ""}</td>
+        <td>${row.phase_numb ?? ""}</td>
+        <td>${row.head_count ?? ""}</td>
+        <td>${row.descriptio ?? ""}</td>
+      `;
+      bodyEl.appendChild(tr);
+    }
+  }
+
+  loadReport();
+</script>
