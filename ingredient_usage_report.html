@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<!--
+  ingredient_usage_report.html
+
+  Report page for GitHub Pages (or anywhere static) that queries the
+  Supabase feed-data mirror live and shows ingredient usage over time.
+
+  SETUP (one-time):
+  1. Run ingredient_usage_view.sql in Supabase's SQL Editor -- it creates
+     the foxpro_mirror.ingredient_usage_daily view this page queries.
+  2. Fill in SUPABASE_URL and SUPABASE_ANON_KEY below (Project Settings >
+     API -- the "anon public" key, never "service_role").
+  3. Host this file the same way as report_example.html -- opening it
+     directly via file:// will fail with a security error in the browser;
+     it needs to be served over http/https (e.g. GitHub Pages).
+
+  WHY THE ANON KEY IS SAFE HERE: same reasoning as report_example.html --
+  it's designed to be embedded in client-side code, and the real security
+  boundary is server-side (Row Level Security + a SELECT-only grant on the
+  view). This page can only ever read data, never change it.
+
+  WHAT "USAGE" MEANS HERE: actual_amo from foxpro_mirror.m_bating_hst --
+  the real amount (lbs) of an ingredient that went into a completed batch,
+  dated by that batch's start_batc (via the ingredient_usage_daily view).
+  This is real batched/consumed amounts, not deliveries or inventory
+  receipts.
+-->
+<title>Ingredient Usage Report</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    margin: 2rem;
+    color: #1a1a1a;
+    max-width: 1000px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  p.subtitle { color: #666; margin-top: 0; font-size: 0.9rem; }
+
+  #controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+    background: #f7f7f7;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1.25rem 0;
+  }
+  .field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .field label { font-size: 0.8rem; font-weight: 600; color: #444; }
+  .field select, .field input {
+    font-size: 0.9rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    min-width: 160px;
+  }
+  #run-btn {
+    font-size: 0.9rem;
+    padding: 0.5rem 1.1rem;
+    border: none;
+    border-radius: 4px;
+    background: #2563eb;
+    color: white;
+    cursor: pointer;
+    height: fit-content;
+  }
+  #run-btn:hover { background: #1d4ed8; }
+  #run-btn:disabled { background: #93b4e8; cursor: default; }
+
+  #status { color: #666; font-size: 0.9rem; margin: 0.5rem 0; min-height: 1.2em; }
+  #error { color: #b00020; font-size: 0.9rem; margin: 0.5rem 0; }
+
+  #chart-wrap {
+    overflow-x: auto;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 1rem 1rem 0.5rem;
+    margin: 1rem 0;
+  }
+  #chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 220px;
+    min-width: 100%;
+  }
+  .bar-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+    min-width: 28px;
+  }
+  .bar {
+    width: 20px;
+    background: #2563eb;
+    border-radius: 2px 2px 0 0;
+    min-height: 1px;
+  }
+  .bar-label {
+    font-size: 0.65rem;
+    color: #666;
+    margin-top: 0.3rem;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    max-height: 90px;
+  }
+
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  th { background: #f5f5f5; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #total-row td { font-weight: 600; border-top: 2px solid #999; }
+</style>
+
+<h1>Ingredient Usage Report</h1>
+<p class="subtitle" id="freshness">Loading...</p>
+
+<div id="controls">
+  <div class="field">
+    <label for="ingredient-select">Ingredient</label>
+    <select id="ingredient-select"><option value="">Loading ingredients...</option></select>
+  </div>
+  <div class="field">
+    <label for="start-date">Start date</label>
+    <input type="date" id="start-date">
+  </div>
+  <div class="field">
+    <label for="end-date">End date</label>
+    <input type="date" id="end-date">
+  </div>
+  <div class="field">
+    <label for="period-select">Group by</label>
+    <select id="period-select">
+      <option value="day">Day</option>
+      <option value="month" selected>Month</option>
+      <option value="year">Year</option>
+      <option value="multi-year">Multiple years (one total)</option>
+    </select>
+  </div>
+  <button id="run-btn">Run report</button>
+</div>
+
+<div id="status"></div>
+<div id="error"></div>
+
+<div id="chart-wrap" hidden>
+  <div id="chart"></div>
+</div>
+
+<table id="results-table" hidden>
+  <thead>
+    <tr>
+      <th id="period-header">Period</th>
+      <th class="num">Total Usage (lbs)</th>
+      <th class="num"># Batches</th>
+    </tr>
+  </thead>
+  <tbody id="results-body"></tbody>
+  <tfoot>
+    <tr id="total-row">
+      <td>Total</td>
+      <td class="num" id="total-lbs"></td>
+      <td class="num" id="total-batches"></td>
+    </tr>
+  </tfoot>
+</table>
+
+<!-- Supabase's JS client, loaded from a public CDN -- no build step needed. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+  // ---- FILL THESE IN (Supabase dashboard: Project Settings > API) ----
+  const SUPABASE_URL = "https://ievchqnplgdcxigvsbpk.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlldmNocW5wbGdkY3hpZ3ZzYnBrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNzk2MDksImV4cCI6MjEwMzg1NTYwOX0.H1Oib2JJkNlLXcr1rp9l7aemqE53m1sm_2BSAAVXlr8"; // the "anon public" key, NOT "service_role"
+  // ----------------------------------------------------------------------
+
+  const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    db: { schema: "foxpro_mirror" },
+  });
+
+  const els = {
+    ingredient: document.getElementById("ingredient-select"),
+    start: document.getElementById("start-date"),
+    end: document.getElementById("end-date"),
+    period: document.getElementById("period-select"),
+    runBtn: document.getElementById("run-btn"),
+    status: document.getElementById("status"),
+    error: document.getElementById("error"),
+    freshness: document.getElementById("freshness"),
+    chartWrap: document.getElementById("chart-wrap"),
+    chart: document.getElementById("chart"),
+    table: document.getElementById("results-table"),
+    periodHeader: document.getElementById("period-header"),
+    body: document.getElementById("results-body"),
+    totalLbs: document.getElementById("total-lbs"),
+    totalBatches: document.getElementById("total-batches"),
+  };
+
+  function fmtNum(n) {
+    return Math.round(n).toLocaleString();
+  }
+
+  function isoDate(d) {
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Default date range: the last 12 months, ending today. Adjust the
+  // controls after loading if you want a different default.
+  function setDefaultDates() {
+    const end = new Date();
+    const start = new Date();
+    start.setFullYear(start.getFullYear() - 1);
+    els.end.value = isoDate(end);
+    els.start.value = isoDate(start);
+  }
+
+  async function loadFreshness() {
+    const { data, error } = await client.from("_sync_status").select("synced_at").limit(1);
+    if (!error && data && data.length) {
+      els.freshness.textContent = "Data as of " + new Date(data[0].synced_at).toLocaleString();
+    } else {
+      els.freshness.textContent = "";
+    }
+  }
+
+  async function loadIngredients() {
+    const { data, error } = await client
+      .from("m_ingr")
+      .select("ingredient, descriptio")
+      .order("descriptio");
+
+    els.ingredient.innerHTML = "";
+    if (error) {
+      els.error.textContent = "Error loading ingredient list: " + error.message;
+      return;
+    }
+    for (const row of data) {
+      const opt = document.createElement("option");
+      opt.value = row.ingredient;
+      opt.textContent = (row.descriptio || "(no description)") + " — " + row.ingredient;
+      els.ingredient.appendChild(opt);
+    }
+  }
+
+  // ingredient_usage_daily can hold many rows for a common ingredient over
+  // a wide date range; PostgREST caps a single response, so page through
+  // with .range() until a page comes back short.
+  async function fetchAllUsageRows(ingredient, startDate, endDate) {
+    const pageSize = 1000;
+    let rows = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await client
+        .from("ingredient_usage_daily")
+        .select("batch_date, actual_amo")
+        .eq("ingredient", ingredient)
+        .gte("batch_date", startDate)
+        .lte("batch_date", endDate)
+        .order("batch_date")
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      rows = rows.concat(data);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+    return rows;
+  }
+
+  function bucketKey(dateStr, period) {
+    const [year, month, day] = dateStr.split("-");
+    switch (period) {
+      case "day":
+        return dateStr;
+      case "month":
+        return year + "-" + month;
+      case "year":
+        return year;
+      case "multi-year":
+      default:
+        return "__all__";
+    }
+  }
+
+  function bucketLabel(key, period) {
+    if (period === "multi-year") return "All selected dates";
+    return key;
+  }
+
+  function periodHeaderLabel(period) {
+    switch (period) {
+      case "day": return "Date";
+      case "month": return "Month";
+      case "year": return "Year";
+      case "multi-year": return "Range";
+      default: return "Period";
+    }
+  }
+
+  function aggregate(rows, period) {
+    const buckets = new Map(); // key -> { lbs, count }
+    for (const row of rows) {
+      const key = bucketKey(row.batch_date, period);
+      if (!buckets.has(key)) buckets.set(key, { lbs: 0, count: 0 });
+      const b = buckets.get(key);
+      b.lbs += Number(row.actual_amo) || 0;
+      b.count += 1;
+    }
+    // Sorted ascending by key -- works for day (YYYY-MM-DD), month
+    // (YYYY-MM), and year (YYYY) since they're all zero-padded strings;
+    // multi-year only ever has one bucket.
+    return [...buckets.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([key, v]) => ({ key, label: bucketLabel(key, period), lbs: v.lbs, count: v.count }));
+  }
+
+  function renderChart(buckets) {
+    els.chart.innerHTML = "";
+    const max = Math.max(1, ...buckets.map((b) => b.lbs));
+    for (const b of buckets) {
+      const col = document.createElement("div");
+      col.className = "bar-col";
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.style.height = Math.max(1, (b.lbs / max) * 180) + "px";
+      bar.title = b.label + ": " + fmtNum(b.lbs) + " lbs";
+      const label = document.createElement("div");
+      label.className = "bar-label";
+      label.textContent = b.label;
+      col.appendChild(bar);
+      col.appendChild(label);
+      els.chart.appendChild(col);
+    }
+    els.chartWrap.hidden = buckets.length === 0;
+  }
+
+  function renderTable(buckets, period) {
+    els.periodHeader.textContent = periodHeaderLabel(period);
+    els.body.innerHTML = "";
+    let totalLbs = 0;
+    let totalCount = 0;
+    for (const b of buckets) {
+      totalLbs += b.lbs;
+      totalCount += b.count;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + b.label + "</td>" +
+        "<td class=\"num\">" + fmtNum(b.lbs) + "</td>" +
+        "<td class=\"num\">" + b.count.toLocaleString() + "</td>";
+      els.body.appendChild(tr);
+    }
+    els.totalLbs.textContent = fmtNum(totalLbs);
+    els.totalBatches.textContent = totalCount.toLocaleString();
+    els.table.hidden = buckets.length === 0;
+  }
+
+  async function runReport() {
+    els.error.textContent = "";
+    const ingredient = els.ingredient.value;
+    const startDate = els.start.value;
+    const endDate = els.end.value;
+    const period = els.period.value;
+
+    if (!ingredient) {
+      els.error.textContent = "Choose an ingredient first.";
+      return;
+    }
+    if (!startDate || !endDate) {
+      els.error.textContent = "Choose a start and end date.";
+      return;
+    }
+    if (startDate > endDate) {
+      els.error.textContent = "Start date must be before end date.";
+      return;
+    }
+
+    els.runBtn.disabled = true;
+    els.status.textContent = "Loading...";
+    els.chartWrap.hidden = true;
+    els.table.hidden = true;
+
+    try {
+      const rows = await fetchAllUsageRows(ingredient, startDate, endDate);
+      const buckets = aggregate(rows, period);
+      renderChart(buckets);
+      renderTable(buckets, period);
+      els.status.textContent = rows.length
+        ? "Showing " + rows.length.toLocaleString() + " batch-ingredient records."
+        : "No usage found for this ingredient in the selected date range.";
+    } catch (err) {
+      els.error.textContent = "Error loading usage data: " + err.message;
+      els.status.textContent = "";
+    } finally {
+      els.runBtn.disabled = false;
+    }
+  }
+
+  els.runBtn.addEventListener("click", runReport);
+
+  (async function init() {
+    setDefaultDates();
+    await Promise.all([loadFreshness(), loadIngredients()]);
+  })();
+</script>
