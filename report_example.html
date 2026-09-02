@@ -86,7 +86,7 @@
     // .from("batch_history"), any table supabase_sync.py mirrors.
     const { data, error } = await client
       .from("groups")
-      .select("group_id, location_i, phase_numb, head_count, descriptio")
+      .select("group_id, location_i, phase_numb, head_count, mortality_, descriptio")
       .eq("active", true)
       .order("group_id");
 
@@ -102,7 +102,7 @@
         <td>${row.group_id ?? ""}</td>
         <td>${row.location_i ?? ""}</td>
         <td>${row.phase_numb ?? ""}</td>
-        <td>${row.head_count ?? ""}</td>
+        <td>${row.head_count-row.mortality_ ?? ""}</td>
         <td>${row.descriptio ?? ""}</td>
       `;
       bodyEl.appendChild(tr);
