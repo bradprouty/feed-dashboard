@@ -337,9 +337,30 @@ const data = await resp.json().catch(() => ({}));
 if (!resp.ok) {
 // A 502 here is the safety guard refusing a resync that looked
 // incomplete (too few records came back from doForms) -- it keeps
-// whatever was already stored rather than overwriting it, and
-// data.error explains why. Surface that message as-is.
+// whatever was already stored rather than overwriting it. Surface
+// the full picture (not just the message) so this is self-diagnosing
+// from the page instead of needing a look at Vercel's logs: how many
+// came back, how many were attempted, how many detail requests
+// failed, and how many were already stored before this attempt.
+if (data.fetched !== undefined) {
+throw new Error(
+`${data.error} (got ${data.fetched} of ${data.attempted} expected, ` +
+`${data.failedDetailRequests} detail request(s) failed, ` +
+`${data.previousCount} were already stored -- kept those)`
+);
+}
 throw new Error(data.error || `HTTP ${resp.status}`);
+}
+await load();
+const failedNote = data.failedDetailRequests ? `, ${data.failedDetailRequests} detail request(s) failed` : '';
+status.textContent = `Synced ${data.recordsStored ?? '?'} doForms records just now${failedNote}.`;
+} catch (err) {
+box.style.display = 'block';
+box.textContent = 'Refresh failed: ' + err.message;
+} finally {
+btn.disabled = false;
+btn.textContent = 'Refresh Groups';
+}
 }
 await load();
 status.textContent = `Synced ${data.recordsStored ?? '?'} doForms records just now.`;
