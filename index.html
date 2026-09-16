@@ -5,345 +5,362 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Active Groups — Feed &amp; Inventory Dashboard</title>
 <style>
-  :root {
-    color-scheme: light;
-    --surface-1:      #fcfcfb;
-    --page-plane:      #f9f9f7;
-    --text-primary:   #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted:     #898781;
-    --gridline:       #e1e0d9;
-    --baseline:       #c3c2b7;
-    --border:         rgba(11,11,11,0.10);
-    --seq-100: #cde2fb; --seq-250: #86b6ef; --seq-300: #6da7ec; --seq-350: #5598e7;
-    --seq-400: #3987e5; --seq-450: #2a78d6; --seq-500: #256abf; --seq-550: #1c5cab;
-    --seq-600: #184f95; --seq-700: #0d366b;
-    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --surface-1:      #1a1a19;
-      --page-plane:      #0d0d0d;
-      --text-primary:   #ffffff;
-      --text-secondary: #c3c2b7;
-      --text-muted:     #898781;
-      --gridline:       #2c2c2a;
-      --baseline:       #383835;
-      --border:         rgba(255,255,255,0.10);
-    }
-  }
-  :root[data-theme="dark"] {
-    color-scheme: dark;
-    --surface-1:      #1a1a19;
-    --page-plane:      #0d0d0d;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --gridline:       #2c2c2a;
-    --baseline:       #383835;
-    --border:         rgba(255,255,255,0.10);
-  }
-
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--page-plane);
-    color: var(--text-primary);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    font-size: 14px;
-  }
-  .wrap { max-width: 1400px; margin: 0 auto; padding: 24px 20px 60px; }
-  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
-  h1 { font-size: 20px; margin: 0; }
-  .meta { color: var(--text-muted); font-size: 12px; }
-  .meta span { display: block; }
-
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
-  .tile {
-    background: var(--surface-1);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 16px;
-  }
-  .tile .label { color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
-  .tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
-
-  .controls { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-  .controls input {
-    background: var(--surface-1);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: var(--text-primary);
-    font-size: 13px;
-    min-width: 220px;
-  }
-
-  table { width: 100%; border-collapse: collapse; background: var(--surface-1); border-radius: 10px; overflow: hidden; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--gridline); white-space: nowrap; }
-  th {
-    color: var(--text-secondary);
-    font-weight: 600;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    cursor: pointer;
-    user-select: none;
-    position: sticky;
-    top: 0;
-    background: var(--surface-1);
-  }
-  th:hover { color: var(--text-primary); }
-  th .arrow { opacity: 0.5; font-size: 10px; margin-left: 4px; }
-  tbody tr:hover { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
-
-  .badge {
-    display: inline-block;
-    padding: 3px 9px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #fff;
-  }
-  .badge.light-text { color: var(--seq-700); }
-
-  .bar-wrap { display: flex; align-items: center; gap: 8px; }
-  .bar-track {
-    width: 90px;
-    height: 8px;
-    border-radius: 4px;
-    background: var(--gridline);
-    overflow: hidden;
-    flex-shrink: 0;
-  }
-  .bar-fill { height: 100%; background: var(--seq-450); border-radius: 4px 0 0 4px; }
-  .bar-label { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-secondary); min-width: 38px; }
-
-  .desc { color: var(--text-secondary); font-size: 12px; }
-  .muted { color: var(--text-muted); }
-  .error-box { background: var(--surface-1); border: 1px solid var(--critical); border-radius: 10px; padding: 16px; color: var(--critical); margin-bottom: 20px; }
-  footer { margin-top: 20px; color: var(--text-muted); font-size: 12px; }
+:root {
+color-scheme: light;
+--surface-1: #fcfcfb;
+--page-plane: #f9f9f7;
+--text-primary: #0b0b0b;
+--text-secondary: #52514e;
+--text-muted: #898781;
+--gridline: #e1e0d9;
+--baseline: #c3c2b7;
+--border: rgba(11,11,11,0.10);
+--seq-100: #cde2fb; --seq-250: #86b6ef; --seq-300: #6da7ec; --seq-350: #5598e7;
+--seq-400: #3987e5; --seq-450: #2a78d6; --seq-500: #256abf; --seq-550: #1c5cab;
+--seq-600: #184f95; --seq-700: #0d366b;
+--good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme="light"]) {
+color-scheme: dark;
+--surface-1: #1a1a19;
+--page-plane: #0d0d0d;
+--text-primary: #ffffff;
+--text-secondary: #c3c2b7;
+--text-muted: #898781;
+--gridline: #2c2c2a;
+--baseline: #383835;
+--border: rgba(255,255,255,0.10);
+}
+}
+:root[data-theme="dark"] {
+color-scheme: dark;
+--surface-1: #1a1a19;
+--page-plane: #0d0d0d;
+--text-primary: #ffffff;
+--text-secondary: #c3c2b7;
+--text-muted: #898781;
+--gridline: #2c2c2a;
+--baseline: #383835;
+--border: rgba(255,255,255,0.10);
+}
+* { box-sizing: border-box; }
+body {
+margin: 0;
+background: var(--page-plane);
+color: var(--text-primary);
+font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+font-size: 14px;
+}
+.wrap { max-width: 1400px; margin: 0 auto; padding: 24px 20px 60px; }
+header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; }
+.meta { color: var(--text-muted); font-size: 12px; }
+.meta span { display: block; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.tile {
+background: var(--surface-1);
+border: 1px solid var(--border);
+border-radius: 10px;
+padding: 14px 16px;
+}
+.tile .label { color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
+.tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.controls { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.controls input {
+background: var(--surface-1);
+border: 1px solid var(--border);
+border-radius: 8px;
+padding: 8px 12px;
+color: var(--text-primary);
+font-size: 13px;
+min-width: 220px;
+}
+.btn {
+background: var(--seq-450);
+color: #fff;
+border: none;
+border-radius: 8px;
+padding: 8px 14px;
+font-size: 13px;
+font-weight: 600;
+cursor: pointer;
+font-family: inherit;
+}
+.btn:hover { background: var(--seq-500); }
+.btn:disabled { opacity: 0.6; cursor: default; }
+#refresh-status { font-size: 12px; color: var(--text-muted); }
+table { width: 100%; border-collapse: collapse; background: var(--surface-1); border-radius: 10px; overflow: hidden; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--gridline); white-space: nowrap; }
+th {
+color: var(--text-secondary);
+font-weight: 600;
+font-size: 12px;
+text-transform: uppercase;
+letter-spacing: 0.03em;
+cursor: pointer;
+user-select: none;
+position: sticky;
+top: 0;
+background: var(--surface-1);
+}
+th:hover { color: var(--text-primary); }
+th .arrow { opacity: 0.5; font-size: 10px; margin-left: 4px; }
+tbody tr:hover { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+.badge {
+display: inline-block;
+padding: 3px 9px;
+border-radius: 6px;
+font-size: 12px;
+font-weight: 600;
+color: #fff;
+}
+.badge.light-text { color: var(--seq-700); }
+.bar-wrap { display: flex; align-items: center; gap: 8px; }
+.bar-track {
+width: 90px;
+height: 8px;
+border-radius: 4px;
+background: var(--gridline);
+overflow: hidden;
+flex-shrink: 0;
+}
+.bar-fill { height: 100%; background: var(--seq-450); border-radius: 4px 0 0 4px; }
+.bar-label { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-secondary); min-width: 38px; }
+.desc { color: var(--text-secondary); font-size: 12px; }
+.muted { color: var(--text-muted); }
+.error-box { background: var(--surface-1); border: 1px solid var(--critical); border-radius: 10px; padding: 16px; color: var(--critical); margin-bottom: 20px; }
+footer { margin-top: 20px; color: var(--text-muted); font-size: 12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>Active Groups — Feed &amp; Inventory</h1>
-    <div class="meta">
-      <span id="doforms-updated">doForms data: —</span>
-      <span id="foxpro-updated">FoxPro feed data: —</span>
-    </div>
-  </header>
-
-  <div id="error" class="error-box" style="display:none;"></div>
-
-  <div class="tiles" id="tiles"></div>
-
-  <div class="controls">
-    <input id="search" type="text" placeholder="Filter by group, description, or location…">
-  </div>
-
-  <div class="table-scroll">
-    <table id="groups-table">
-      <thead>
-        <tr>
-          <th data-key="GroupID">Group ID</th>
-          <th data-key="Group_Description">Description</th>
-          <th data-key="Location">Location</th>
-          <th data-key="phase">Phase</th>
-          <th class="num" data-key="Current_Inventory">Current Inv.</th>
-          <th class="num" data-key="Mortality_percent">Mortality %</th>
-          <th class="num" data-key="dof">DOF</th>
-          <th class="num" data-key="total_lbs_fed">Total Lbs Fed</th>
-          <th class="num" data-key="lbs_feed_per_head">Lbs Feed/Head</th>
-          <th class="num" data-key="pct_of_total_budget">% of Total Budget</th>
-          <th class="num" data-key="predicted_weight">Predicted Wt (lbs)</th>
-          <th class="num" data-key="feed_per_head_per_day">Feed/Head/Day</th>
-          <th data-key="expected_close_date">Expected Close</th>
-        </tr>
-      </thead>
-      <tbody id="tbody"></tbody>
-    </table>
-  </div>
-
-  <footer>
-    Feed progress and predicted weight are computed from the EasyFeed FoxPro database
-    (phase-specific mortality-adjusted head counts) and your Feed Budget's F/G ratios.
-    Groups without a FoxPro match yet show blank feed columns.
-    Feed/Head/Day uses a trailing ~10-day average from real bin-scale data (BinMaster/BarnTools/AP)
-    where available; barns without bin-scale coverage yet show an "(est)" rate from the standard
-    Feed Budget for that phase. Expected Close is that rate projected against the remaining Feed Budget.
-  </footer>
+<header>
+<h1>Active Groups — Feed &amp; Inventory</h1>
+<div class="meta">
+<span id="doforms-updated">doForms data: —</span>
+<span id="foxpro-updated">FoxPro feed data: —</span>
 </div>
-
+</header>
+<div id="error" class="error-box" style="display:none;"></div>
+<div class="tiles" id="tiles"></div>
+<div class="controls">
+<input id="search" type="text" placeholder="Filter by group, description, or location…">
+<button id="refresh-btn" class="btn" type="button">Refresh Groups</button>
+<span id="refresh-status"></span>
+</div>
+<div class="table-scroll">
+<table id="groups-table">
+<thead>
+<tr>
+<th data-key="GroupID">Group ID</th>
+<th data-key="Group_Description">Description</th>
+<th data-key="Location">Location</th>
+<th data-key="phase">Phase</th>
+<th class="num" data-key="Current_Inventory">Current Inv.</th>
+<th class="num" data-key="Mortality_percent">Mortality %</th>
+<th class="num" data-key="dof">DOF</th>
+<th class="num" data-key="total_lbs_fed">Total Lbs Fed</th>
+<th class="num" data-key="lbs_feed_per_head">Lbs Feed/Head</th>
+<th class="num" data-key="pct_of_total_budget">% of Total Budget</th>
+<th class="num" data-key="predicted_weight">Predicted Wt (lbs)</th>
+<th class="num" data-key="feed_per_head_per_day">Feed/Head/Day</th>
+<th data-key="expected_close_date">Expected Close</th>
+</tr>
+</thead>
+<tbody id="tbody"></tbody>
+</table>
+</div>
+<footer>
+Feed progress and predicted weight are computed from the EasyFeed FoxPro database
+(phase-specific mortality-adjusted head counts) and your Feed Budget's F/G ratios.
+Groups without a FoxPro match yet show blank feed columns.
+Feed/Head/Day uses a trailing ~10-day average from real bin-scale data (BinMaster/BarnTools/AP)
+where available; barns without bin-scale coverage yet show an "(est)" rate from the standard
+Feed Budget for that phase. Expected Close is that rate projected against the remaining Feed Budget.
+"Refresh Groups" re-pulls the doForms side (inventory, mortality, etc.) and re-matches it against
+the most recent FoxPro feed sync — it does not re-run the FoxPro sync itself, which still requires
+foxpro_sync.py on the mill computer.
+</footer>
+</div>
 <script>
 const DASHBOARD_API = 'https://doforms-backend.vercel.app/api/dashboard-data';
-
+const WEBHOOK_API = 'https://doforms-backend.vercel.app/api/webhook';
 const PHASE_STEPS = {
-  N1: { hex: 'var(--seq-250)', light: true },
-  N2: { hex: 'var(--seq-300)', light: true },
-  N3: { hex: 'var(--seq-350)', light: true },
-  F1: { hex: 'var(--seq-400)', light: false },
-  F2: { hex: 'var(--seq-450)', light: false },
-  F3: { hex: 'var(--seq-500)', light: false },
-  F4: { hex: 'var(--seq-550)', light: false },
-  F5: { hex: 'var(--seq-600)', light: false },
-  F6: { hex: 'var(--seq-700)', light: false },
+N1: { hex: 'var(--seq-250)', light: true },
+N2: { hex: 'var(--seq-300)', light: true },
+N3: { hex: 'var(--seq-350)', light: true },
+F1: { hex: 'var(--seq-400)', light: false },
+F2: { hex: 'var(--seq-450)', light: false },
+F3: { hex: 'var(--seq-500)', light: false },
+F4: { hex: 'var(--seq-550)', light: false },
+F5: { hex: 'var(--seq-600)', light: false },
+F6: { hex: 'var(--seq-700)', light: false },
 };
-
 let rows = [];
 let sortKey = 'GroupID';
 let sortDir = 1;
-
 function fmtNum(n, digits = 0) {
-  if (n === null || n === undefined || Number.isNaN(n)) return '—';
-  return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+if (n === null || n === undefined || Number.isNaN(n)) return '—';
+return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
-
 function daysOnFeed(startDateStr) {
-  if (!startDateStr) return null;
-  const start = new Date(startDateStr);
-  const today = new Date();
-  return Math.round((today - start) / (1000 * 60 * 60 * 24));
+if (!startDateStr) return null;
+const start = new Date(startDateStr);
+const today = new Date();
+return Math.round((today - start) / (1000 * 60 * 60 * 24));
 }
-
 function phaseBadge(phase) {
-  if (!phase) return '<span class="muted">—</span>';
-  const step = PHASE_STEPS[phase];
-  if (!step) return `<span class="badge" style="background:var(--seq-400)">${phase}</span>`;
-  const cls = step.light ? 'badge light-text' : 'badge';
-  return `<span class="${cls}" style="background:${step.hex}">${phase}</span>`;
+if (!phase) return '<span class="muted">—</span>';
+const step = PHASE_STEPS[phase];
+if (!step) return `<span class="badge" style="background:var(--seq-400)">${phase}</span>`;
+const cls = step.light ? 'badge light-text' : 'badge';
+return `<span class="${cls}" style="background:${step.hex}">${phase}</span>`;
 }
-
 function progressBar(pct) {
-  if (pct === null || pct === undefined) return '<span class="muted">—</span>';
-  const clamped = Math.max(0, Math.min(100, pct));
-  return `<div class="bar-wrap">
-    <div class="bar-track"><div class="bar-fill" style="width:${clamped}%"></div></div>
-    <div class="bar-label">${fmtNum(pct, 1)}%</div>
-  </div>`;
+if (pct === null || pct === undefined) return '<span class="muted">—</span>';
+const clamped = Math.max(0, Math.min(100, pct));
+return `<div class="bar-wrap">
+<div class="bar-track"><div class="bar-fill" style="width:${clamped}%"></div></div>
+<div class="bar-label">${fmtNum(pct, 1)}%</div>
+</div>`;
 }
-
 function feedRateCell(r) {
-  if (r.feed_per_head_per_day === null || r.feed_per_head_per_day === undefined) {
-    return '<span class="muted">—</span>';
-  }
-  const val = fmtNum(r.feed_per_head_per_day, 2);
-  const isEstimate = r.feed_rate_source === 'phase_budget_estimate';
-  return isEstimate
-    ? `${val} <span class="muted" style="font-size:11px;">(est)</span>`
-    : val;
+if (r.feed_per_head_per_day === null || r.feed_per_head_per_day === undefined) {
+return '<span class="muted">—</span>';
 }
-
+const val = fmtNum(r.feed_per_head_per_day, 2);
+const isEstimate = r.feed_rate_source === 'phase_budget_estimate';
+return isEstimate
+? `${val} <span class="muted" style="font-size:11px;">(est)</span>`
+: val;
+}
 function fmtDate(iso) {
-  if (!iso) return '<span class="muted">—</span>';
-  const d = new Date(iso + 'T00:00:00');
-  if (Number.isNaN(d.getTime())) return '<span class="muted">—</span>';
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+if (!iso) return '<span class="muted">—</span>';
+const d = new Date(iso + 'T00:00:00');
+if (Number.isNaN(d.getTime())) return '<span class="muted">—</span>';
+return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
-
 function render() {
-  const q = document.getElementById('search').value.trim().toLowerCase();
-  let filtered = rows.filter(r => {
-    if (!q) return true;
-    return [r.GroupID, r.Group_Description, r.Location].some(v => String(v || '').toLowerCase().includes(q));
-  });
-
-  filtered.sort((a, b) => {
-    const av = a[sortKey], bv = b[sortKey];
-    if (av === null || av === undefined) return 1;
-    if (bv === null || bv === undefined) return -1;
-    if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
-    return (av - bv) * sortDir;
-  });
-
-  const tbody = document.getElementById('tbody');
-  tbody.innerHTML = filtered.map(r => `
-    <tr>
-      <td>${r.GroupID || ''}</td>
-      <td class="desc">${r.Group_Description || ''}</td>
-      <td>${r.Location ?? ''}</td>
-      <td>${phaseBadge(r.phase)}</td>
-      <td class="num">${fmtNum(r.Current_Inventory)}</td>
-      <td class="num">${r.Mortality_percent != null ? fmtNum(r.Mortality_percent * 100, 1) + '%' : '—'}</td>
-      <td class="num">${r.dof != null ? fmtNum(r.dof) : '—'}</td>
-      <td class="num">${fmtNum(r.total_lbs_fed)}</td>
-      <td class="num">${fmtNum(r.lbs_feed_per_head, 1)}</td>
-      <td class="num">${progressBar(r.pct_of_total_budget)}</td>
-      <td class="num">${fmtNum(r.predicted_weight, 1)}</td>
-      <td class="num">${feedRateCell(r)}</td>
-      <td>${fmtDate(r.expected_close_date)}</td>
-    </tr>
-  `).join('') || `<tr><td colspan="13" class="muted" style="text-align:center; padding:24px;">No groups match.</td></tr>`;
-  document.querySelectorAll('th').forEach(th => {
-    th.querySelector('.arrow')?.remove();
-    if (th.dataset.key === sortKey) {
-      th.insertAdjacentHTML('beforeend', `<span class="arrow">${sortDir === 1 ? '▲' : '▼'}</span>`);
-    }
-  });
-}
-
-function renderTiles() {
-  const active = rows.length;
-  const totalHead = rows.reduce((s, r) => s + (r.Current_Inventory || 0), 0);
-  const withFeed = rows.filter(r => r.pct_of_total_budget != null);
-  const avgPct = withFeed.length ? withFeed.reduce((s, r) => s + r.pct_of_total_budget, 0) / withFeed.length : null;
-  const nearFinish = rows.filter(r => (r.pct_of_total_budget || 0) >= 90).length;
-
-  document.getElementById('tiles').innerHTML = `
-    <div class="tile"><div class="label">Active Groups</div><div class="value">${active}</div></div>
-    <div class="tile"><div class="label">Total Current Inventory</div><div class="value">${fmtNum(totalHead)}</div></div>
-    <div class="tile"><div class="label">Avg. % of Total Budget</div><div class="value">${avgPct != null ? fmtNum(avgPct, 1) + '%' : '—'}</div></div>
-    <div class="tile"><div class="label">Groups Near Finish (≥90%)</div><div class="value">${nearFinish}</div></div>
-  `;
-}
-
-async function load() {
-  try {
-    const resp = await fetch(`${DASHBOARD_API}?t=${Date.now()}`, { cache: 'no-store' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-
-    rows = (data.groups || []).map(g => ({
-      ...g,
-      dof: daysOnFeed(g.Start_Date),
-      phase: g.feed ? g.feed.phase : null,
-      total_lbs_fed: g.feed ? g.feed.total_lbs_fed : null,
-      lbs_feed_per_head: g.feed ? g.feed.lbs_feed_per_head : null,
-      pct_of_total_budget: g.feed ? g.feed.pct_of_total_budget : null,
-      predicted_weight: g.feed ? g.feed.predicted_weight : null,
-      feed_per_head_per_day: g.feed ? g.feed.feed_per_head_per_day : null,
-      feed_rate_source: g.feed ? g.feed.feed_rate_source : null,
-      expected_close_date: g.feed ? g.feed.expected_close_date : null,
-    }));
-
-    document.getElementById('doforms-updated').textContent =
-      'doForms data: ' + (rows.length ? 'loaded ' + rows.length + ' groups' : 'no data');
-    document.getElementById('foxpro-updated').textContent =
-      'FoxPro feed sync: ' + (data.generated_at ? new Date(data.generated_at).toLocaleString() : 'never run yet');
-
-    renderTiles();
-    render();
-  } catch (err) {
-    const box = document.getElementById('error');
-    box.style.display = 'block';
-    box.textContent = 'Could not load dashboard data: ' + err.message;
-  }
-}
-
+const q = document.getElementById('search').value.trim().toLowerCase();
+let filtered = rows.filter(r => {
+if (!q) return true;
+return [r.GroupID, r.Group_Description, r.Location].some(v => String(v || '').toLowerCase().includes(q));
+});
+filtered.sort((a, b) => {
+const av = a[sortKey], bv = b[sortKey];
+if (av === null || av === undefined) return 1;
+if (bv === null || bv === undefined) return -1;
+if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+return (av - bv) * sortDir;
+});
+const tbody = document.getElementById('tbody');
+tbody.innerHTML = filtered.map(r => `
+<tr>
+<td>${r.GroupID || ''}</td>
+<td class="desc">${r.Group_Description || ''}</td>
+<td>${r.Location ?? ''}</td>
+<td>${phaseBadge(r.phase)}</td>
+<td class="num">${fmtNum(r.Current_Inventory)}</td>
+<td class="num">${r.Mortality_percent != null ? fmtNum(r.Mortality_percent * 100, 1) + '%' : '—'}</td>
+<td class="num">${r.dof != null ? fmtNum(r.dof) : '—'}</td>
+<td class="num">${fmtNum(r.total_lbs_fed)}</td>
+<td class="num">${fmtNum(r.lbs_feed_per_head, 1)}</td>
+<td class="num">${progressBar(r.pct_of_total_budget)}</td>
+<td class="num">${fmtNum(r.predicted_weight, 1)}</td>
+<td class="num">${feedRateCell(r)}</td>
+<td>${fmtDate(r.expected_close_date)}</td>
+</tr>
+`).join('') || `<tr><td colspan="13" class="muted" style="text-align:center; padding:24px;">No groups match.</td></tr>`;
 document.querySelectorAll('th').forEach(th => {
-  th.addEventListener('click', () => {
-    const key = th.dataset.key;
-    if (sortKey === key) sortDir *= -1;
-    else { sortKey = key; sortDir = 1; }
-    render();
-  });
+th.querySelector('.arrow')?.remove();
+if (th.dataset.key === sortKey) {
+th.insertAdjacentHTML('beforeend', `<span class="arrow">${sortDir === 1 ? '▲' : '▼'}</span>`);
+}
+});
+}
+function renderTiles() {
+const active = rows.length;
+const totalHead = rows.reduce((s, r) => s + (r.Current_Inventory || 0), 0);
+const withFeed = rows.filter(r => r.pct_of_total_budget != null);
+const avgPct = withFeed.length ? withFeed.reduce((s, r) => s + r.pct_of_total_budget, 0) / withFeed.length : null;
+const nearFinish = rows.filter(r => (r.pct_of_total_budget || 0) >= 90).length;
+document.getElementById('tiles').innerHTML = `
+<div class="tile"><div class="label">Active Groups</div><div class="value">${active}</div></div>
+<div class="tile"><div class="label">Total Current Inventory</div><div class="value">${fmtNum(totalHead)}</div></div>
+<div class="tile"><div class="label">Avg. % of Total Budget</div><div class="value">${avgPct != null ? fmtNum(avgPct, 1) + '%' : '—'}</div></div>
+<div class="tile"><div class="label">Groups Near Finish (≥90%)</div><div class="value">${nearFinish}</div></div>
+`;
+}
+async function load() {
+try {
+const resp = await fetch(`${DASHBOARD_API}?t=${Date.now()}`, { cache: 'no-store' });
+if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+const data = await resp.json();
+rows = (data.groups || []).map(g => ({
+...g,
+dof: daysOnFeed(g.Start_Date),
+phase: g.feed ? g.feed.phase : null,
+total_lbs_fed: g.feed ? g.feed.total_lbs_fed : null,
+lbs_feed_per_head: g.feed ? g.feed.lbs_feed_per_head : null,
+pct_of_total_budget: g.feed ? g.feed.pct_of_total_budget : null,
+predicted_weight: g.feed ? g.feed.predicted_weight : null,
+feed_per_head_per_day: g.feed ? g.feed.feed_per_head_per_day : null,
+feed_rate_source: g.feed ? g.feed.feed_rate_source : null,
+expected_close_date: g.feed ? g.feed.expected_close_date : null,
+}));
+document.getElementById('doforms-updated').textContent =
+'doForms data: ' + (rows.length ? 'loaded ' + rows.length + ' groups' : 'no data');
+document.getElementById('foxpro-updated').textContent =
+'FoxPro feed sync: ' + (data.generated_at ? new Date(data.generated_at).toLocaleString() : 'never run yet');
+renderTiles();
+render();
+} catch (err) {
+const box = document.getElementById('error');
+box.style.display = 'block';
+box.textContent = 'Could not load dashboard data: ' + err.message;
+}
+}
+async function refreshGroups() {
+const btn = document.getElementById('refresh-btn');
+const status = document.getElementById('refresh-status');
+const box = document.getElementById('error');
+box.style.display = 'none';
+btn.disabled = true;
+btn.textContent = 'Refreshing…';
+status.textContent = '';
+try {
+const resp = await fetch(WEBHOOK_API, { method: 'POST', cache: 'no-store' });
+const data = await resp.json().catch(() => ({}));
+if (!resp.ok) {
+// A 502 here is the safety guard refusing a resync that looked
+// incomplete (too few records came back from doForms) -- it keeps
+// whatever was already stored rather than overwriting it, and
+// data.error explains why. Surface that message as-is.
+throw new Error(data.error || `HTTP ${resp.status}`);
+}
+await load();
+status.textContent = `Synced ${data.recordsStored ?? '?'} doForms records just now.`;
+} catch (err) {
+box.style.display = 'block';
+box.textContent = 'Refresh failed: ' + err.message;
+} finally {
+btn.disabled = false;
+btn.textContent = 'Refresh Groups';
+}
+}
+document.querySelectorAll('th').forEach(th => {
+th.addEventListener('click', () => {
+const key = th.dataset.key;
+if (sortKey === key) sortDir *= -1;
+else { sortKey = key; sortDir = 1; }
+render();
+});
 });
 document.getElementById('search').addEventListener('input', render);
-
+document.getElementById('refresh-btn').addEventListener('click', refreshGroups);
 load();
 setInterval(load, 5 * 60 * 1000); // refresh every 5 minutes
 </script>
