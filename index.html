@@ -362,16 +362,6 @@ btn.disabled = false;
 btn.textContent = 'Refresh Groups';
 }
 }
-await load();
-status.textContent = `Synced ${data.recordsStored ?? '?'} doForms records just now.`;
-} catch (err) {
-box.style.display = 'block';
-box.textContent = 'Refresh failed: ' + err.message;
-} finally {
-btn.disabled = false;
-btn.textContent = 'Refresh Groups';
-}
-}
 document.querySelectorAll('th').forEach(th => {
 th.addEventListener('click', () => {
 const key = th.dataset.key;
