@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feed Logistics</title>
+<style>
+  :root {
+    --bg:#f5f6f4; --card:#fff; --ink:#1d2421; --muted:#68726d; --line:#dfe3e0;
+    --accent:#2f6b4f; --accent-ink:#fff; --ok:#2f7d4f; --warn:#b7791f; --bad:#b8352b; --info:#2b6cb0;
+    --ok-bg:#e4f3ea; --warn-bg:#fbf0d9; --bad-bg:#f9e1de; --info-bg:#e3eefa; --chip:#eceee9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161a18; --card:#1f2522; --ink:#e8ece9; --muted:#93a099; --line:#323a36;
+      --accent:#5fb08a; --accent-ink:#0f1612; --ok:#6cc58f; --warn:#e0b24f; --bad:#ef7d72; --info:#7db4ee;
+      --ok-bg:#1c3326; --warn-bg:#3a3017; --bad-bg:#40201d; --info-bg:#1b2c40; --chip:#2a322e; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:16px 20px 8px; }
+  h1 { margin:0; font-size:20px; }
+  .sub { color:var(--muted); font-size:12px; margin-top:2px; }
+  .wrap { padding:0 20px 40px; max-width:1400px; margin:0 auto; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
+  .chip { border:1px solid var(--line); background:var(--chip); color:var(--ink); border-radius:999px; padding:6px 13px; cursor:pointer; font:inherit; }
+  .chip.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  .grow { flex:1; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:10px 0 16px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .kpi .v { font-size:24px; font-weight:650; }
+  .kpi .l { color:var(--muted); font-size:12px; }
+  .kpi.bad .v { color:var(--bad); } .kpi.warn .v { color:var(--warn); }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:6px 0 14px; flex-wrap:wrap; }
+  .tab { background:none; border:0; border-bottom:3px solid transparent; padding:9px 14px; cursor:pointer; color:var(--muted); font:inherit; }
+  .tab.on { color:var(--ink); border-bottom-color:var(--accent); font-weight:600; }
+  .panel { display:none; } .panel.on { display:block; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); background:var(--chip); white-space:nowrap; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  tr:last-child td { border-bottom:0; }
+  .tw { overflow-x:auto; border-radius:10px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .pill.ok { background:var(--ok-bg); color:var(--ok); } .pill.warn { background:var(--warn-bg); color:var(--warn); }
+  .pill.bad { background:var(--bad-bg); color:var(--bad); } .pill.info { background:var(--info-bg); color:var(--info); }
+  .pill.mute { background:var(--chip); color:var(--muted); }
+  .meter { width:120px; height:10px; background:var(--chip); border-radius:6px; overflow:hidden; display:inline-block; vertical-align:middle; }
+  .meter > i { display:block; height:100%; }
+  .daygrp td { background:var(--chip); font-weight:650; }
+  .muted { color:var(--muted); } .small { font-size:12px; }
+  .note { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:10px 0; font-size:13px; }
+  .note b { font-weight:650; }
+  .err { background:var(--bad-bg); color:var(--bad); padding:10px 14px; border-radius:10px; margin:10px 0; }
+  select { font:inherit; padding:5px 8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
+  input[type=number] { font:inherit; padding:5px 8px; width:70px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
+  svg.spark { vertical-align:middle; }
+  #loading { padding:30px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Feed Logistics</h1>
+  <div class="sub" id="fresh">Loading…</div>
+</header>
+<div class="wrap">
+  <div class="bar" id="rangeBar"></div>
+  <div class="bar small">
+    <span class="muted">Reserve</span><input type="number" id="setReserve" value="1" min="0" max="5" step="0.5"><span class="muted">days of feed</span>
+    <span class="muted" style="margin-left:10px">Fill bins to</span><input type="number" id="setFill" value="95" min="50" max="100" step="5"><span class="muted">%</span>
+    <span class="muted" style="margin-left:10px">Flag deviation over</span><input type="number" id="setDev" value="20" min="5" max="80" step="5"><span class="muted">%</span>
+    <span class="grow"></span>
+    <button class="chip" id="reloadBtn">Reload data</button>
+  </div>
+  <div id="err"></div>
+  <div class="kpis" id="kpis"></div>
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-p="plan">Delivery plan</button>
+    <button class="tab" data-p="levels">Bin levels &amp; consumption</button>
+    <button class="tab" data-p="recon">Batch vs delivery</button>
+    <button class="tab" data-p="notes">Data notes</button>
+  </div>
+  <div id="loading">Loading data…</div>
+  <div class="panel on" id="p-plan"></div>
+  <div class="panel" id="p-levels"></div>
+  <div class="panel" id="p-recon"></div>
+  <div class="panel" id="p-notes"></div>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+/* ------------------------------------------------------------------ config */
+const API = 'https://doforms-backend.vercel.app/api';
+const SB_URL = 'https://ievchqnplgdcxigvsbpk.supabase.co/rest/v1';
+// Anon key: read-only by RLS on the foxpro_mirror schema (same key the existing report page uses).
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlldmNocW5wbGdkY3hpZ3ZzYnBrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNzk2MDksImV4cCI6MjEwMzg1NTYwOX0.H1Oib2JJkNlLXcr1rp9l7aemqE53m1sm_2BSAAVXlr8';
+const TZ = 'America/Chicago';           // mill clock: batch_history timestamps are naive Central time
+const DAY = 86400000, HOUR = 3600000;
+const TRUCK_LBS = 25000;                // largest ticket the mill batches
+const ARRIVAL_LAG_H = 3;                // assumed hours from batch finish to feed in the bin
+const CLUSTER_GAP_H = 4;                // tickets for one location closer than this = one truck trip
+const MATCH_AFTER_H = 14;               // a bin fill is looked for this long after the batch finishes
+const MATCH_BEFORE_H = 1;
+const DELIVERY_MIN_LBS = 1500;          // matches api/binmaster-sync.js; also used for AP's day-over-day inference
+const AP_INFER_MIN_LBS = 3000;         // AP gives one level + one consumption number per day, so inferred fills must be bigger to beat timing noise
+const STALE_LEVEL_H = 30;               // level reading older than this is called stale
+const SENSOR_BIN_COUNT = { '21': 2 };   // Brouwer has 4 bins in FoxPro but only 2 have sensors
+const VENDORS = { binmaster: 'BinMaster', barntools: 'BarnTools', ap: 'AP' };
+
+const S = { reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14 };
+let NOW = Date.now();
+let D = null;       // raw loaded data
+let M = null;       // computed model
+
+/* ----------------------------------------------------------- time helpers */
+const dtf = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+  day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function tzOffsetMs(epoch) {
+  const p = {}; for (const x of dtf.formatToParts(new Date(epoch))) p[x.type] = x.value;
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(epoch / 1000) * 1000;
+}
+function ctToEpoch(str) {        // naive Central 'YYYY-MM-DD[ T]HH:MM:SS' -> epoch ms
+  const m = String(str).match(/(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!m) return NaN;
+  const naive = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  let e = naive - tzOffsetMs(naive);
+  e = naive - tzOffsetMs(e);
+  return e;
+}
+function ctKey(epoch) {          // epoch -> 'YYYY-MM-DD' in Central
+  const p = {}; for (const x of dtf.formatToParts(new Date(epoch))) p[x.type] = x.value;
+  return `${p.year}-${p.month}-${p.day}`;
+}
+function utcKey(epoch) { return new Date(epoch).toISOString().slice(0, 10); }
+function addDays(key, n) { const d = new Date(key + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function dayStart(key) { return ctToEpoch(key + 'T00:00:00'); }
+function dow(key) { return new Date(key + 'T00:00:00Z').getUTCDay(); }   // 0=Sun
+function fmtDay(key) { const d = new Date(key + 'T12:00:00Z'); return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }); }
+function fmtTime(epoch) { return new Date(epoch).toLocaleString('en-US', { timeZone: TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+function ago(epoch) {
+  const h = (NOW - epoch) / HOUR;
+  if (h < 1) return Math.max(1, Math.round(h * 60)) + ' min ago';
+  if (h < 48) return Math.round(h) + ' h ago';
+  return Math.round(h / 24) + ' d ago';
+}
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (n) => (n == null || !isFinite(n)) ? '—' : Math.round(n).toLocaleString('en-US');
+const mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+const sd = (a) => { if (a.length < 2) return 0; const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
+
+/* ------------------------------------------------------------ data loading */
+async function getJson(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(`${r.status} ${url.split('?')[0]}`);
+  return r.json();
+}
+function sb(path) {
+  return getJson(`${SB_URL}/${path}`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Accept-Profile': 'foxpro_mirror' } });
+}
+async function loadAll() {
+  const since = addDays(ctKey(Date.now()), -75);
+  const tasks = {
+    binmaster: getJson(`${API}/binmaster-data`),
+    barntools: getJson(`${API}/barntools-data`),
+    ap: getJson(`${API}/ap-data`),
+    bins: sb('bins?select=f_bin_id,bin_name,location_i,bin_capaci,active&limit=1000'),
+    locations: sb('locations?select=location_i,descriptio,active&limit=1000'),
+    tickets: sb(`batch_history?select=ticket_num,group_id,location_i,actual_amo,start_batc,stop_batch,recipe_id&stop_batch=gte.${since}&order=stop_batch.asc&limit=10000`),
+    sync: sb('_sync_status?select=synced_at&order=synced_at.desc&limit=1'),
+  };
+  const out = {}, errors = [];
+  await Promise.all(Object.entries(tasks).map(async ([k, p]) => {
+    try { out[k] = await p; } catch (e) { errors.push(`${k}: ${e.message}`); out[k] = null; }
+  }));
+  out.errors = errors;
+  return out;
+}
+
+/* ------------------------------------------------------------------- model */
+function buildModel(d) {
+  const todayKey = ctKey(NOW);
+  const locName = {};
+  for (const l of d.locations || []) locName[String(l.location_i)] = (l.descriptio || '').trim();
+
+  // capacity per location (sensor-covered bins only where known)
+  const capByLoc = {};
+  for (const b of d.bins || []) {
+    if (b.active === false) continue;
+    const k = String(b.location_i);
+    (capByLoc[k] = capByLoc[k] || []).push(Number(b.bin_capaci) || 0);
+  }
+  const capOf = (k) => {
+    const arr = (capByLoc[k] || []).filter((x) => x > 0).sort((a, b) => b - a);
+    const n = SENSOR_BIN_COUNT[k];
+    return (n ? arr.slice(0, n) : arr).reduce((x, y) => x + y, 0) || null;
+  };
+
+  // mill tickets -> truck-trip clusters per location
+  const ticketsByLoc = {};
+  for (const t of d.tickets || []) {
+    const stop = ctToEpoch(t.stop_batch), start = ctToEpoch(t.start_batc);
+    if (!isFinite(stop)) continue;
+    const k = String(t.location_i);
+    (ticketsByLoc[k] = ticketsByLoc[k] || []).push({ n: t.ticket_num, group: t.group_id, lbs: Number(t.actual_amo) || 0, start: isFinite(start) ? start : stop, stop });
+  }
+  const clustersByLoc = {};
+  for (const [k, arr] of Object.entries(ticketsByLoc)) {
+    arr.sort((a, b) => a.stop - b.stop);
+    const cl = [];
+    for (const t of arr) {
+      const last = cl[cl.length - 1];
+      if (last && t.start - last.stop < CLUSTER_GAP_H * HOUR) { last.tickets.push(t); last.stop = Math.max(last.stop, t.stop); last.lbs += t.lbs; }
+      else cl.push({ loc: k, start: t.start, stop: t.stop, lbs: t.lbs, tickets: [t] });
+    }
+    clustersByLoc[k] = cl;
+  }
+
+  // vendor data per location
+  const vend = {};
+  const vendorMeta = {};
+  for (const v of Object.keys(VENDORS)) {
+    const x = d[v];
+    if (!x) continue;
+    vendorMeta[v] = { updatedAt: x.updatedAt ? Date.parse(x.updatedAt) : null, probe: x.schemaProbe || null };
+    for (const [loc, series] of Object.entries(x.byLocation || {})) {
+      if (!vend[loc]) vend[loc] = { vendor: v, series, updatedAt: vendorMeta[v].updatedAt };
+    }
+  }
+
+  const locIds = new Set([...Object.keys(vend), ...Object.keys(clustersByLoc).filter((k) => {
+    const c = clustersByLoc[k]; return c.length && NOW - c[c.length - 1].stop < 45 * DAY;
+  })]);
+
+  const L = [];
+  for (const loc of [...locIds].sort((a, b) => Number(a) - Number(b))) {
+    const v = vend[loc] || null;
+    const name = locName[loc] || `Location ${loc}`;
+    const cap = capOf(loc);
+    const cl = clustersByLoc[loc] || [];
+    const row = { loc, name, cap, vendor: v ? v.vendor : null, clusters: cl, flags: [] };
+
+    // ---- consumption stats (scale data)
+    row.cons = null;
+    if (v) {
+      const keys = Object.keys(v.series).sort();
+      const first = keys[0];
+      const lastComplete = addDays(utcKey(v.updatedAt || NOW), -1);
+      const val = (key) => (key < first ? undefined : (v.series[key] || 0));
+      const at = (i) => val(addDays(lastComplete, -i));
+      const days = (from, to) => { const o = []; for (let i = from; i <= to; i++) { const x = at(i); if (x !== undefined) o.push(x); } return o; };
+      const last7 = days(0, 6), recent3 = days(0, 2), base = days(3, 16);
+      const spark = []; for (let i = 13; i >= 0; i--) spark.push(at(i) == null ? 0 : at(i));
+      row.cons = {
+        lastComplete, rate7: mean(last7), recent3: mean(recent3), baseMean: mean(base), baseSd: sd(base), baseN: base.length,
+        yesterday: at(0), spark, at, first,
+      };
+    }
+
+    // mill-side rate (lbs/day delivered, trailing 28 days) -- fallback rate and cross-check
+    const win28 = NOW - 28 * DAY;
+    const mill28 = cl.filter((c) => c.stop >= win28).reduce((x, c) => x + c.lbs, 0);
+    row.mill28 = mill28;
+    row.millRate = mill28 / 28;
+
+    // ---- rate used for forecasting
+    let rate = null, rateSrc = null;
+    if (row.cons && row.cons.rate7 != null) { rate = row.cons.rate7; rateSrc = 'scale 7-day avg'; }
+    else if (row.millRate > 0) { rate = row.millRate; rateSrc = 'mill deliveries 28-day avg'; }
+    row.rate = rate; row.rateSrc = rateSrc;
+    row.idle = !!(row.cons ? (row.cons.recent3 != null && row.cons.recent3 < 300) : (cl.length ? NOW - cl[cl.length - 1].stop > 14 * DAY : true));
+    if (row.idle) row.rate = 0;
+
+    // ---- deviation from normal
+    row.dev = null;
+    if (row.cons && row.cons.baseMean != null && row.cons.baseN >= 7 && row.cons.baseMean > 1500) {
+      const c = row.cons, pct = (c.recent3 / c.baseMean - 1) * 100;
+      const yZ = c.baseSd > 0 ? (c.yesterday - c.baseMean) / c.baseSd : 0;
+      row.dev = { pct, yPct: (c.yesterday / c.baseMean - 1) * 100, yZ };
+      if (c.recent3 < 300) row.flags.push({ k: 'bad', t: 'No consumption', tip: 'Scale shows ~0 lb/day for 3 days but it normally uses ' + fmt(c.baseMean) + '. Empty barn or sensor problem.' });
+      else if (Math.abs(pct) >= S.devPct) row.flags.push({ k: Math.abs(pct) >= S.devPct * 1.75 ? 'bad' : 'warn', t: (pct > 0 ? 'Eating +' : 'Eating ') + Math.round(pct) + '%', tip: `Last 3 days ${fmt(c.recent3)} lb/day vs normal ${fmt(c.baseMean)} (prior 14 days).` });
+      else if (Math.abs(row.dev.yPct) >= S.devPct * 1.5 && Math.abs(yZ) >= 2) row.flags.push({ k: 'warn', t: 'Yesterday ' + (row.dev.yPct > 0 ? '+' : '') + Math.round(row.dev.yPct) + '%', tip: `Yesterday ${fmt(c.yesterday)} lb vs normal ${fmt(c.baseMean)}.` });
+    }
+
+    // ---- current level
+    row.level = currentLevel(loc, d, v, row, cl, cap);
+    row.daysLeft = (row.level && row.rate > 0) ? row.level.lbs / row.rate : null;
+    row.runOut = (row.daysLeft != null) ? NOW + row.daysLeft * DAY : null;
+    if (row.level && row.level.stale) row.flags.push({ k: 'warn', t: 'Stale level', tip: 'Last level reading is ' + ago(row.level.asOf) + '.' });
+    if (row.level && row.cap && row.level.measured && row.level.raw > row.cap * 1.25) row.flags.push({ k: 'warn', t: 'Level > capacity', tip: `Reading ${fmt(row.level.raw)} vs capacity ${fmt(row.cap)} — check units/bin mapping.` });
+
+    // ---- 28-day mass balance: mill shipped vs scale consumed
+    row.balance = null;
+    if (row.cons && cap) {
+      const to = row.cons.lastComplete, from = addDays(to, -27);
+      let consumed = 0, n = 0;
+      for (let i = 0; i < 28; i++) { const x = row.cons.at(i); if (x !== undefined) { consumed += x; n++; } }
+      if (n >= 14) {
+        const fromE = dayStart(from), toE = dayStart(addDays(to, 1));
+        const delivered = cl.filter((c) => c.stop + ARRIVAL_LAG_H * HOUR >= fromE && c.stop + ARRIVAL_LAG_H * HOUR < toE).reduce((x, c) => x + c.lbs, 0);
+        const diff = delivered - consumed;
+        const tol = cap + 0.08 * Math.max(delivered, consumed);
+        row.balance = { delivered, consumed, diff, tol, days: n, bad: Math.abs(diff) > tol };
+        if (row.balance.bad) row.flags.push({ k: diff > 0 ? 'bad' : 'warn', t: diff > 0 ? 'Shipped > eaten' : 'Eaten > shipped',
+          tip: `Last ${n} days: mill shipped ${fmt(delivered)} lb, scale consumed ${fmt(consumed)} lb (gap ${fmt(diff)}). More than the bins can hold (${fmt(cap)}), so tickets and scale disagree.` });
+      }
+    }
+    L.push(row);
+  }
+
+  // reconcile tickets vs detected deliveries
+  const recon = reconcile(L, d, clustersByLoc);
+  for (const r of L) {
+    const bad = recon.rows.filter((x) => x.loc === r.loc && x.sev === 'bad' && x.stop > NOW - S.recon * DAY).length;
+    if (bad) r.flags.push({ k: 'bad', t: bad + ' delivery mismatch' + (bad > 1 ? 'es' : ''), tip: 'See the "Batch vs delivery" tab.' });
+  }
+
+  return { todayKey, L, recon, vendorMeta };
+}
+
+function currentLevel(loc, d, v, row, cl, cap) {
+  const bm = d.binmaster && d.binmaster.levelByLocation && d.binmaster.levelByLocation[loc];
+  const ap = d.ap && d.ap.levelByLocation && d.ap.levelByLocation[loc];
+  let measured = null;
+  if (bm && bm.asOf) {
+    measured = { lbs: bm.lbs, raw: bm.lbs, asOf: Date.parse(bm.asOf), src: 'BinMaster', bins: bm.bins };
+  } else if (ap && Object.keys(ap).length) {
+    const dk = Object.keys(ap).sort().pop();
+    measured = { lbs: ap[dk], raw: ap[dk], asOf: ctToEpoch(dk + 'T12:00:00'), src: 'AP (daily)', daily: true };
+  }
+  const rate = row.rate || 0;
+  if (measured) {
+    // roll the reading forward to now: minus eating, plus tickets that arrived since
+    const el = Math.max(0, NOW - measured.asOf);
+    let added = 0;
+    for (const c of cl) { const arr = c.stop + ARRIVAL_LAG_H * HOUR; if (arr > measured.asOf && arr <= NOW) added += c.lbs; }
+    let est = measured.lbs - rate * el / DAY + added;
+    if (cap) est = Math.min(est, cap);
+    est = Math.max(0, est);
+    return { lbs: est, measured: true, src: measured.src, asOf: measured.asOf, raw: measured.raw, rolled: el > 3 * HOUR || added > 0,
+      stale: el > STALE_LEVEL_H * HOUR && !measured.daily || (measured.daily && el > 3 * DAY), added, bins: measured.bins };
+  }
+  // no level feed: bounded mass balance (start empty vs start full) from tickets and scale data
+  if (!cap || !cl.length) return null;
+  const startE = NOW - 28 * DAY;
+  const evs = [];
+  for (const c of cl) { const arr = c.stop + ARRIVAL_LAG_H * HOUR; if (arr >= startE && arr <= NOW) evs.push({ t: arr, lbs: c.lbs }); }
+  const step = (init) => {
+    let lvl = init, t = startE;
+    const all = evs.slice().sort((a, b) => a.t - b.t);
+    let i = 0;
+    for (let tt = startE; tt < NOW; tt += 6 * HOUR) {
+      const t2 = Math.min(NOW, tt + 6 * HOUR);
+      let add = 0; while (i < all.length && all[i].t <= t2) { add += all[i].lbs; i++; }
+      lvl = Math.min(cap, Math.max(0, lvl + add - dailyRateAt(row, tt) * (t2 - tt) / DAY));
+    }
+    return lvl;
+  };
+  const lo = step(0), hi = step(cap);
+  return { lbs: lo, hi, measured: false, src: 'estimated', asOf: NOW, stale: false, raw: lo };
+}
+function dailyRateAt(row, epoch) {
+  if (row.cons) { const x = row.cons.at ? scaleOn(row, epoch) : null; if (x != null) return x; }
+  return row.rate || 0;
+}
+function scaleOn(row, epoch) {
+  const key = utcKey(epoch);
+  const c = row.cons; if (!c || key > c.lastComplete) return row.rate || 0;
+  const i = Math.round((Date.parse(c.lastComplete) - Date.parse(key)) / DAY);
+  const x = c.at(i); return x === undefined ? (row.rate || 0) : x;
+}
+
+/* -------------------------------------------------------------- reconcile */
+function eventsFor(loc, d) {
+  const bm = d.binmaster;
+  if (bm && bm.deliveryEvents && bm.deliveryEvents[loc]) {
+    return { src: 'BinMaster', syncAt: Date.parse(bm.updatedAt), from: bm.eventsFrom ? Date.parse(bm.eventsFrom) : null, ev: bm.deliveryEvents[loc].map((e) => ({ t: Date.parse(e.t), lbs: e.lbs, bin: e.bin })) };
+  }
+  if (bm && bm.byLocation && bm.byLocation[loc] && bm.deliveryEvents) {   // BinMaster location with zero events stored
+    return { src: 'BinMaster', syncAt: Date.parse(bm.updatedAt), from: bm.eventsFrom ? Date.parse(bm.eventsFrom) : null, ev: [] };
+  }
+  const ap = d.ap;
+  if (ap && ap.levelByLocation && ap.levelByLocation[loc]) {
+    const lv = ap.levelByLocation[loc], cs = (ap.byLocation && ap.byLocation[loc]) || {};
+    const keys = Object.keys(lv).sort(), ev = [];
+    for (let i = 1; i < keys.length; i++) {
+      if (addDays(keys[i - 1], 1) !== keys[i]) continue;
+      const lbs = lv[keys[i]] - lv[keys[i - 1]] + (cs[keys[i]] || 0);
+      if (lbs >= AP_INFER_MIN_LBS) ev.push({ t: ctToEpoch(keys[i] + 'T12:00:00'), lbs: Math.round(lbs), daily: true, date: keys[i] });
+    }
+    return { src: 'AP (daily)', syncAt: Date.parse(ap.updatedAt), from: keys.length ? ctToEpoch(addDays(keys[0], 1) + 'T00:00:00') : null, ev };
+  }
+  return null;
+}
+
+function reconcile(L, d, clustersByLoc) {
+  const rows = [];
+  for (const row of L) {
+    const cl = clustersByLoc[row.loc] || [];
+    const E = eventsFor(row.loc, d);
+    const claimed = new Set();
+    for (const c of cl) {
+      const base = { loc: row.loc, name: row.name, stop: c.stop, start: c.start, mill: c.lbs, tickets: c.tickets.map((t) => t.n), group: c.tickets[0].group };
+      if (!E) { rows.push({ ...base, status: 'No level feed', sev: 'mute', detected: null }); continue; }
+      if (E.from && c.stop < E.from) { rows.push({ ...base, status: 'Before sensor history', sev: 'mute', detected: null }); continue; }
+      const stopKey = ctKey(c.stop), startKey = ctKey(c.start);
+      const hit = [];
+      E.ev.forEach((e, i) => {
+        if (claimed.has(i)) return;
+        const inWin = e.daily ? (e.date >= startKey && e.date <= addDays(stopKey, 2))
+          : (e.t >= c.start - MATCH_BEFORE_H * HOUR && e.t <= c.stop + MATCH_AFTER_H * HOUR);
+        if (inWin) { hit.push(e); claimed.add(i); }
+      });
+      const det = hit.reduce((x, e) => x + e.lbs, 0);
+      if (!hit.length) {
+        const pending = NOW < c.stop + MATCH_AFTER_H * HOUR;
+        const awaiting = E.syncAt && c.stop + ARRIVAL_LAG_H * HOUR > E.syncAt;   // sensors haven't synced since it was batched
+        const stale = row.level && row.level.stale;
+        if (awaiting) rows.push({ ...base, detected: null, status: 'Awaiting next sensor sync', sev: 'info' });
+        else rows.push({ ...base, detected: 0, status: pending ? 'Pending' : (stale ? 'Not detected (stale sensor)' : 'No fill detected'), sev: pending ? 'info' : 'bad' });
+        continue;
+      }
+      const diff = det - c.lbs, tol = Math.max(0.10 * c.lbs, 1200);
+      let status = 'Matches', sev = 'ok';
+      if (diff < -tol) { status = 'Bin gained less'; sev = 'bad'; }
+      else if (diff > tol) { status = 'Bin gained more'; sev = 'bad'; }
+      rows.push({ ...base, detected: det, diff, status, sev, src: E.src, evs: hit });
+    }
+    if (E) {
+      E.ev.forEach((e, i) => {
+        if (claimed.has(i)) return;
+        if (E.from && e.t < E.from + MATCH_AFTER_H * HOUR) return;   // its ticket may predate sensor history
+        rows.push({ loc: row.loc, name: row.name, stop: e.t, start: e.t, mill: 0, tickets: [], detected: e.lbs, diff: e.lbs, status: 'Fill with no ticket', sev: 'bad', src: E.src, evs: [e] });
+      });
+    }
+  }
+  rows.sort((a, b) => b.stop - a.stop);
+  return { rows };
+}
+
+/* ------------------------------------------------------------ delivery plan */
+function plan(row, horizonDays) {
+  const out = [];
+  if (!row.rate || row.rate <= 0 || !row.cap || !row.level) return out;
+  const fillTo = row.cap * S.fillPct / 100;
+  const reserve = row.rate * S.reserveDays;
+  let level = row.level.lbs, t = NOW;
+  const todayKey = ctKey(NOW);
+  for (let d = 0; d <= horizonDays; d++) {
+    const key = addDays(todayKey, d);
+    const end = dayStart(addDays(key, 1));
+    const endLevel = level - row.rate * (end - t) / DAY;
+    if (endLevel < reserve) {
+      const have = Math.max(0, endLevel);
+      const lbs = Math.max(0, fillTo - have);
+      if (lbs >= 1000) out.push({ loc: row.loc, name: row.name, key, lbs, trucks: Math.ceil(lbs / TRUCK_LBS), urgent: d === 0 && level < reserve, est: !row.level.measured, runsOutToday: endLevel <= 0 });
+      level = have + lbs; t = end;
+    } else { level = endLevel; t = end; }
+  }
+  return out;
+}
+
+function rangeKeys() {
+  const t = ctKey(NOW);
+  const endOfWeek = addDays(t, (7 - dow(t)) % 7);        // Sunday ends the week
+  const r = {
+    today: [t, t, 'Today'], tomorrow: [addDays(t, 1), addDays(t, 1), 'Tomorrow'],
+    next3: [t, addDays(t, 2), 'Next 3 days'], week: [t, endOfWeek, 'Rest of this week'],
+    next7: [t, addDays(t, 6), 'Next 7 days'], nextweek: [addDays(endOfWeek, 1), addDays(endOfWeek, 7), 'Next week'],
+    next14: [t, addDays(t, 13), 'Next 14 days'],
+  };
+  return r;
+}
+
+/* ------------------------------------------------------------------ render */
+function spark(vals, color) {
+  const w = 84, h = 22, max = Math.max(1, ...vals);
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * (w - 2) + 1).toFixed(1)},${(h - 2 - v / max * (h - 4)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${color || 'currentColor'}" stroke-width="1.5" points="${pts}"/></svg>`;
+}
+function pill(k, t, tip) { return `<span class="pill ${k}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(t)}</span>`; }
+function flagsHtml(r) { return r.flags.map((f) => pill(f.k, f.t, f.tip)).join(' ') || '<span class="muted">—</span>'; }
+function meter(r) {
+  if (!r.level || !r.cap) return '<span class="muted">no level</span>';
+  const pct = Math.max(0, Math.min(100, r.level.lbs / r.cap * 100));
+  const col = (r.daysLeft != null && r.daysLeft < S.reserveDays) ? 'var(--bad)' : (r.daysLeft != null && r.daysLeft < S.reserveDays + 1.5) ? 'var(--warn)' : 'var(--ok)';
+  return `<span class="meter"><i style="width:${pct.toFixed(0)}%;background:${col}"></i></span> <span class="small">${Math.round(pct)}%</span>`;
+}
+
+function render() {
+  M = buildModel(D);
+  document.getElementById('loading').style.display = 'none';
+  const R = rangeKeys();
+  const [k0, k1] = R[S.range];
+
+  // range chips
+  const bar = document.getElementById('rangeBar');
+  bar.innerHTML = Object.entries(R).map(([id, v]) => `<button class="chip${id === S.range ? ' on' : ''}" data-r="${id}">${v[2]}</button>`).join('') +
+    `<span class="muted small" style="margin-left:6px">${k0 === k1 ? fmtDay(k0) : fmtDay(k0) + ' – ' + fmtDay(k1)}</span>`;
+  bar.querySelectorAll('.chip').forEach((b) => b.onclick = () => { S.range = b.dataset.r; render(); });
+
+  // plans
+  const horizon = Math.max(14, Math.round((Date.parse(k1) - Date.parse(M.todayKey)) / DAY) + 1);
+  const all = M.L.flatMap((r) => plan(r, horizon));
+  const inRange = all.filter((p) => p.key >= k0 && p.key <= k1);
+  const trucks = inRange.reduce((x, p) => x + p.trucks, 0), lbs = inRange.reduce((x, p) => x + p.lbs, 0);
+  const active = M.L.filter((r) => !r.idle);
+  const low = active.filter((r) => r.daysLeft != null && r.daysLeft < S.reserveDays);
+  const devs = active.filter((r) => r.flags.some((f) => /Eating|No consumption|Yesterday/.test(f.t)));
+  const mism = M.recon.rows.filter((x) => x.sev === 'bad' && x.stop > NOW - S.recon * DAY);
+
+  // freshness
+  const vm = M.vendorMeta, fr = [];
+  for (const [v, name] of Object.entries(VENDORS)) if (vm[v] && vm[v].updatedAt) fr.push(`${name} synced ${ago(vm[v].updatedAt)}`);
+  const sy = D.sync && D.sync[0] && D.sync[0].synced_at ? Date.parse(D.sync[0].synced_at) : null;
+  if (sy) fr.push(`mill data synced ${ago(sy)}`);
+  document.getElementById('fresh').textContent = fr.join(' · ') || 'No sync timestamps available';
+
+  document.getElementById('err').innerHTML = D.errors.length ? `<div class="err">Some data failed to load: ${esc(D.errors.join('; '))}</div>` : '';
+
+  document.getElementById('kpis').innerHTML =
+    kpi(trucks, `truckloads · ${R[S.range][2].toLowerCase()}`, trucks ? '' : '') +
+    kpi(fmt(lbs), `lbs to deliver · ${R[S.range][2].toLowerCase()}`, '') +
+    kpi(low.length, 'locations under ' + S.reserveDays + ' day of feed', low.length ? 'bad' : '') +
+    kpi(devs.length, 'consumption deviations', devs.length ? 'warn' : '') +
+    kpi(mism.length, `delivery mismatches · ${S.recon}d`, mism.length ? 'bad' : '');
+
+  renderPlan(inRange, R);
+  renderLevels();
+  renderRecon();
+  renderNotes();
+}
+function kpi(v, l, cls) { return `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`; }
+
+function renderPlan(items, R) {
+  const el = document.getElementById('p-plan');
+  const label = R[S.range][2];
+  if (!M.L.length) { el.innerHTML = '<div class="note">No location data loaded. Check the error message above, then press Reload data.</div>'; return; }
+  if (!items.length) {
+    el.innerHTML = `<div class="note">No deliveries predicted for <b>${esc(label.toLowerCase())}</b> at the current settings. Bins are projected to stay above ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed.</div>`;
+    return;
+  }
+  const byDay = {};
+  for (const p of items) (byDay[p.key] = byDay[p.key] || []).push(p);
+  let h = `<div class="tw"><table><thead><tr><th>Location</th><th class="n">Deliver</th><th class="n">Trucks</th><th class="n">Level now</th><th class="n">Eats / day</th><th>Runs out</th><th>Basis</th></tr></thead><tbody>`;
+  for (const key of Object.keys(byDay).sort()) {
+    const g = byDay[key];
+    h += `<tr class="daygrp"><td colspan="7">${fmtDay(key)}${key === M.todayKey ? ' (today)' : ''} — ${g.reduce((x, p) => x + p.trucks, 0)} truck${g.reduce((x, p) => x + p.trucks, 0) === 1 ? '' : 's'}, ${fmt(g.reduce((x, p) => x + p.lbs, 0))} lb</td></tr>`;
+    for (const p of g.sort((a, b) => b.urgent - a.urgent || b.lbs - a.lbs)) {
+      const r = M.L.find((x) => x.loc === p.loc);
+      h += `<tr><td><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}</td>
+        <td class="n">${fmt(p.lbs)} lb</td><td class="n">${p.trucks}</td>
+        <td class="n">${fmt(r.level.lbs)}${r.cap ? ` <span class="muted small">/ ${fmt(r.cap)}</span>` : ''}</td>
+        <td class="n">${fmt(r.rate)}</td>
+        <td>${r.runOut ? fmtDay(ctKey(r.runOut)) : '—'}</td>
+        <td>${p.est ? pill('mute', 'estimated level', 'No bin level feed here. Level is estimated from mill tickets minus scale consumption.') : pill('ok', 'measured level', 'Level from the bin sensor ' + ago(r.level.asOf))}</td></tr>`;
+    }
+  }
+  el.innerHTML = h + '</tbody></table></div>' +
+    `<div class="note small muted">Method: each bin's level is rolled forward at its recent eating rate. A delivery is scheduled on the day the bin would drop below ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed, sized to refill to ${S.fillPct}% of capacity, and split into ${fmt(TRUCK_LBS)} lb trucks. Change the reserve and fill settings at the top.</div>`;
+}
+
+function renderLevels() {
+  const el = document.getElementById('p-levels');
+  const rows = M.L.slice().sort((a, b) => (a.idle - b.idle) || ((a.daysLeft == null ? 99 : a.daysLeft) - (b.daysLeft == null ? 99 : b.daysLeft)));
+  let h = `<div class="tw"><table><thead><tr><th>Location</th><th>Source</th><th>Bin level</th><th class="n">Level (lb)</th><th class="n">Days left</th><th class="n">Eats / day</th><th class="n">Normal</th><th class="n">Last 3d</th><th>14-day</th><th>Flags</th></tr></thead><tbody>`;
+  for (const r of rows) {
+    const c = r.cons;
+    const lv = r.level;
+    const lvTxt = lv ? (lv.measured ? fmt(lv.lbs) + (lv.rolled ? '<span class="muted small" title="Rolled forward from the last sensor reading"> ~</span>' : '') : `${fmt(lv.lbs)}–${fmt(lv.hi)}`) : '—';
+    h += `<tr${r.idle ? ' style="opacity:.55"' : ''}>
+      <td><b>${esc(r.name)}</b> <span class="muted small">#${esc(r.loc)}</span>${r.idle ? ' ' + pill('mute', 'idle') : ''}</td>
+      <td class="small">${esc(r.vendor ? VENDORS[r.vendor] : 'mill only')}${lv ? `<br><span class="muted">${lv.measured ? 'level ' + esc(ago(lv.asOf)) : 'level estimated'}</span>` : ''}</td>
+      <td>${meter(r)}</td><td class="n">${lvTxt}</td>
+      <td class="n">${r.daysLeft != null && !r.idle ? r.daysLeft.toFixed(1) : '—'}</td>
+      <td class="n">${fmt(r.rate)}<br><span class="muted small">${esc(r.rateSrc || '')}</span></td>
+      <td class="n">${c ? fmt(c.baseMean) : '—'}</td><td class="n">${c ? fmt(c.recent3) : '—'}</td>
+      <td>${c ? spark(c.spark, r.flags.some((f) => f.k === 'bad') ? 'var(--bad)' : 'var(--accent)') : ''}</td>
+      <td>${flagsHtml(r)}</td></tr>`;
+  }
+  el.innerHTML = h + '</tbody></table></div>' +
+    `<div class="note small muted"><b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
+}
+
+function renderRecon() {
+  const el = document.getElementById('p-recon');
+  const opts = [7, 14, 30, 60].map((n) => `<option value="${n}"${n === S.recon ? ' selected' : ''}>last ${n} days</option>`).join('');
+  const rows = M.recon.rows.filter((x) => x.stop > NOW - S.recon * DAY);
+  const bad = rows.filter((x) => x.sev === 'bad'), ok = rows.filter((x) => x.sev === 'ok');
+  let h = `<div class="bar small"><select id="reconSel">${opts}</select>
+    <span>${pill('ok', ok.length + ' matched')} ${pill('bad', bad.length + ' discrepancies')} ${pill('mute', (rows.length - ok.length - bad.length) + ' not checkable / pending')}</span>
+    <label class="small"><input type="checkbox" id="reconBad"${S.onlyBad ? ' checked' : ''}> discrepancies only</label></div>`;
+  const shown = S.onlyBad ? bad : rows;
+  if (!shown.length) h += `<div class="note">Nothing to show.</div>`;
+  else {
+    h += `<div class="tw"><table><thead><tr><th>Batch finished</th><th>Location</th><th>Tickets</th><th class="n">Mill batched</th><th class="n">Bin gained</th><th class="n">Difference</th><th>Result</th></tr></thead><tbody>`;
+    for (const x of shown) {
+      h += `<tr><td>${esc(fmtTime(x.stop))}</td><td><b>${esc(x.name)}</b> <span class="muted small">#${esc(x.loc)}</span></td>
+        <td class="small">${x.tickets.length ? esc(x.tickets.join(', ')) : '—'}</td>
+        <td class="n">${x.mill ? fmt(x.mill) : '—'}</td><td class="n">${x.detected == null ? '—' : fmt(x.detected)}</td>
+        <td class="n">${x.diff == null ? '—' : (x.diff > 0 ? '+' : '') + fmt(x.diff)}</td>
+        <td>${pill(x.sev, x.status)}${x.src ? ` <span class="muted small">${esc(x.src)}</span>` : ''}</td></tr>`;
+    }
+    h += '</tbody></table></div>';
+  }
+  h += `<div class="note small muted">A batch is matched to the bin fill(s) detected from the level sensor within ${MATCH_AFTER_H} hours after it finishes. Tickets for the same location less than ${CLUSTER_GAP_H} hours apart count as one truck trip. A difference over 10% (minimum 1,200 lb) is flagged. "No level feed" means that location has no sensor level data yet, so only the 28-day shipped-vs-eaten check applies.</div>`;
+  el.innerHTML = h;
+  document.getElementById('reconSel').onchange = (e) => { S.recon = +e.target.value; render(); };
+  document.getElementById('reconBad').onchange = (e) => { S.onlyBad = e.target.checked; render(); };
+}
+
+function renderNotes() {
+  const el = document.getElementById('p-notes');
+  const bm = D.binmaster || {}, ap = D.ap || {}, bt = D.barntools || {};
+  const items = [];
+  items.push(bm.levelByLocation ? `BinMaster: bin levels and delivery detection are live (${Object.keys(bm.levelByLocation).length} locations, ${Object.values(bm.deliveryEvents || {}).reduce((x, a) => x + a.length, 0)} fills stored${bm.eventsFrom ? ', watching since ' + fmtTime(Date.parse(bm.eventsFrom)) : ''}).`
+    : 'BinMaster: sync update not deployed yet, so there are no bin levels or detected deliveries. Levels are estimated from tickets and scale consumption.');
+  items.push(ap.levelByLocation ? `AP: daily bin levels are live for ${Object.keys(ap.levelByLocation).join(', ')}. Deliveries are inferred from day-over-day level change plus consumption.` : 'AP: level storage not deployed yet.');
+  items.push(bt.schemaProbe ? (bt.schemaProbe.error ? 'BarnTools: schema probe failed: ' + bt.schemaProbe.error : 'BarnTools: no level feed yet. A schema probe has recorded which queries might expose bin levels (see /api/barntools-data → schemaProbe).') : 'BarnTools: consumption only. No bin level feed, so Schaap North and Raak are estimated.');
+  items.push('Location 12 (Schaap South), the nurseries and any location without a bin scale have no vendor data; their rate comes from mill deliveries.');
+  items.push('Vendor syncs run once a day (Vercel Hobby). A level can be up to ~24 h old, so it is rolled forward using the eating rate and any mill tickets since. Tickets are assumed to reach the bin ' + ARRIVAL_LAG_H + ' h after the batch finishes.');
+  items.push('Scale consumption is bucketed by UTC day (the existing sync convention), so a "day" runs 7 pm–7 pm Central.');
+  items.push('Delivery detection is a threshold rule (a rise of at least ' + fmt(DELIVERY_MIN_LBS) + ' lb with small dips allowed). If it misses real fills or invents them, the two constants at the top of api/binmaster-sync.js can be tuned.');
+  const san = (M.L || []).filter((r) => r.level && r.level.measured && r.cap && r.level.raw > r.cap * 1.25).map((r) => r.name);
+  if (san.length) items.push('Check units: level exceeds capacity at ' + san.join(', ') + '.');
+  el.innerHTML = '<div class="note"><ul style="margin:0;padding-left:18px">' + items.map((i) => `<li>${esc(i)}</li>`).join('') + '</ul></div>';
+}
+
+/* --------------------------------------------------------------------- UI */
+function bindUI() {
+  document.getElementById('tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('.tab'); if (!b) return;
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('on', p.id === 'p-' + b.dataset.p));
+  });
+  const bind = (id, key) => document.getElementById(id).addEventListener('change', (e) => { const v = parseFloat(e.target.value); if (isFinite(v)) { S[key] = v; if (D) render(); } });
+  bind('setReserve', 'reserveDays'); bind('setFill', 'fillPct'); bind('setDev', 'devPct');
+  document.getElementById('reloadBtn').onclick = load;
+}
+async function init() { bindUI(); await load(); }
+async function load() {
+  document.getElementById('loading').style.display = 'block';
+  NOW = Date.now();
+  D = await loadAll();
+  render();
+}
+
+window.FeedLogistics = { S, init, bindUI, load, render, buildModel, plan, rangeKeys, ctToEpoch, ctKey, addDays,
+  _set(d, now) { D = d; if (now) NOW = now; }, _model() { return M; } };
+if (!window.__FL_NO_AUTO) init();
+})();
+</script>
+</body>
+</html>
