@@ -320,11 +320,14 @@ function buildModel(d) {
 }
 
 function currentLevel(loc, d, v, row, cl, cap) {
-  const bm = d.binmaster && d.binmaster.levelByLocation && d.binmaster.levelByLocation[loc];
   const ap = d.ap && d.ap.levelByLocation && d.ap.levelByLocation[loc];
   let measured = null;
-  if (bm && bm.asOf) {
-    measured = { lbs: bm.lbs, raw: bm.lbs, asOf: Date.parse(bm.asOf), src: 'BinMaster', bins: bm.bins };
+  for (const k of ['binmaster', 'barntools']) {
+    const lv = d[k] && d[k].levelByLocation && d[k].levelByLocation[loc];
+    if (lv && lv.asOf) { measured = { lbs: lv.lbs, raw: lv.lbs, asOf: Date.parse(lv.asOf), src: VENDORS[k], bins: lv.bins }; break; }
+  }
+  if (measured) {
+    /* measured from a bin sensor feed */
   } else if (ap && Object.keys(ap).length) {
     const dk = Object.keys(ap).sort().pop();
     measured = { lbs: ap[dk], raw: ap[dk], asOf: ctToEpoch(dk + 'T12:00:00'), src: 'AP (daily)', daily: true };
@@ -373,12 +376,13 @@ function scaleOn(row, epoch) {
 
 /* -------------------------------------------------------------- reconcile */
 function eventsFor(loc, d) {
-  const bm = d.binmaster;
-  if (bm && bm.deliveryEvents && bm.deliveryEvents[loc]) {
-    return { src: 'BinMaster', syncAt: Date.parse(bm.updatedAt), from: bm.eventsFrom ? Date.parse(bm.eventsFrom) : null, ev: bm.deliveryEvents[loc].map((e) => ({ t: Date.parse(e.t), lbs: e.lbs, bin: e.bin })) };
-  }
-  if (bm && bm.byLocation && bm.byLocation[loc] && bm.deliveryEvents) {   // BinMaster location with zero events stored
-    return { src: 'BinMaster', syncAt: Date.parse(bm.updatedAt), from: bm.eventsFrom ? Date.parse(bm.eventsFrom) : null, ev: [] };
+  for (const k of ['binmaster', 'barntools']) {
+    const v = d[k];
+    if (!v || !v.deliveryEvents) continue;
+    const hasLevel = v.levelByLocation && v.levelByLocation[loc];
+    if (!v.deliveryEvents[loc] && !(k === 'binmaster' ? (v.byLocation && v.byLocation[loc]) : hasLevel)) continue;
+    return { src: VENDORS[k], syncAt: Date.parse(v.updatedAt), from: v.eventsFrom ? Date.parse(v.eventsFrom) : null,
+      ev: (v.deliveryEvents[loc] || []).map((e) => ({ t: Date.parse(e.t), lbs: e.lbs, bin: e.bin })) };
   }
   const ap = d.ap;
   if (ap && ap.levelByLocation && ap.levelByLocation[loc]) {
@@ -647,7 +651,8 @@ function renderNotes() {
   items.push(bm.levelByLocation ? `BinMaster: bin levels and delivery detection are live (${Object.keys(bm.levelByLocation).length} locations, ${Object.values(bm.deliveryEvents || {}).reduce((x, a) => x + a.length, 0)} fills stored${bm.eventsFrom ? ', watching since ' + fmtTime(Date.parse(bm.eventsFrom)) : ''}).`
     : 'BinMaster: sync update not deployed yet, so there are no bin levels or detected deliveries. Levels are estimated from tickets and scale consumption.');
   items.push(ap.levelByLocation ? `AP: daily bin levels are live for ${Object.keys(ap.levelByLocation).join(', ')}. Deliveries are inferred from day-over-day level change plus consumption.` : 'AP: level storage not deployed yet.');
-  items.push(bt.schemaProbe ? (bt.schemaProbe.error ? 'BarnTools: schema probe failed: ' + bt.schemaProbe.error : 'BarnTools: no level feed yet. A schema probe has recorded which queries might expose bin levels (see /api/barntools-data → schemaProbe).') : 'BarnTools: consumption only. No bin level feed, so Schaap North and Raak are estimated.');
+  items.push(bt.levelByLocation && Object.keys(bt.levelByLocation).length ? `BarnTools: hourly bin levels are live for ${Object.keys(bt.levelByLocation).join(', ')} (${Object.values(bt.deliveryEvents || {}).reduce((x, a) => x + a.length, 0)} fills stored; each sync covers about 4 days).`
+    : (bt.levelError ? 'BarnTools: level query failed: ' + bt.levelError : 'BarnTools: consumption only so far, so Schaap North and Raak levels are estimated.'));
   items.push('Location 12 (Schaap South), the nurseries and any location without a bin scale have no vendor data; their rate comes from mill deliveries.');
   items.push('Vendor syncs run once a day (Vercel Hobby). A level can be up to ~24 h old, so it is rolled forward using the eating rate and any mill tickets since. A batch is assumed to reach the bin ' + ARRIVAL_LAG_H + ' h after it finishes unless the sensor history at that location shows a longer typical delay.');
   items.push('Scale consumption is bucketed by UTC day (the existing sync convention), so a "day" runs 7 pm–7 pm Central.');
