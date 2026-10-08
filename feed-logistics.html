@@ -100,7 +100,7 @@ const DAY = 86400000, HOUR = 3600000;
 const TRUCK_LBS = 25000;                // largest ticket the mill batches
 const ARRIVAL_LAG_H = 3;                // assumed hours from batch finish to feed in the bin
 const CLUSTER_GAP_H = 4;                // tickets for one location closer than this = one truck trip
-const MATCH_AFTER_H = 14;               // a bin fill is looked for this long after the batch finishes
+const MATCH_AFTER_H = 36;               // a bin fill is looked for this long after the batch finishes (real data: most arrive 0-10 h later, some the next day)
 const MATCH_BEFORE_H = 1;
 const DELIVERY_MIN_LBS = 1500;          // matches api/binmaster-sync.js; also used for AP's day-over-day inference
 const AP_INFER_MIN_LBS = 3000;         // AP gives one level + one consumption number per day, so inferred fills must be bigger to beat timing noise
@@ -282,6 +282,7 @@ function buildModel(d) {
       else if (Math.abs(row.dev.yPct) >= S.devPct * 1.5 && Math.abs(yZ) >= 2) row.flags.push({ k: 'warn', t: 'Yesterday ' + (row.dev.yPct > 0 ? '+' : '') + Math.round(row.dev.yPct) + '%', tip: `Yesterday ${fmt(c.yesterday)} lb vs normal ${fmt(c.baseMean)}.` });
     }
 
+    row.lagH = estimateLag(loc, d, cl);
     // ---- current level
     row.level = currentLevel(loc, d, v, row, cl, cap);
     row.daysLeft = (row.level && row.rate > 0) ? row.level.lbs / row.rate : null;
@@ -297,7 +298,7 @@ function buildModel(d) {
       for (let i = 0; i < 28; i++) { const x = row.cons.at(i); if (x !== undefined) { consumed += x; n++; } }
       if (n >= 14) {
         const fromE = dayStart(from), toE = dayStart(addDays(to, 1));
-        const delivered = cl.filter((c) => c.stop + ARRIVAL_LAG_H * HOUR >= fromE && c.stop + ARRIVAL_LAG_H * HOUR < toE).reduce((x, c) => x + c.lbs, 0);
+        const delivered = cl.filter((c) => c.stop + row.lagH * HOUR >= fromE && c.stop + row.lagH * HOUR < toE).reduce((x, c) => x + c.lbs, 0);
         const diff = delivered - consumed;
         const tol = cap + 0.08 * Math.max(delivered, consumed);
         row.balance = { delivered, consumed, diff, tol, days: n, bad: Math.abs(diff) > tol };
@@ -333,7 +334,7 @@ function currentLevel(loc, d, v, row, cl, cap) {
     // roll the reading forward to now: minus eating, plus tickets that arrived since
     const el = Math.max(0, NOW - measured.asOf);
     let added = 0;
-    for (const c of cl) { const arr = c.stop + ARRIVAL_LAG_H * HOUR; if (arr > measured.asOf && arr <= NOW) added += c.lbs; }
+    for (const c of cl) { const arr = c.stop + row.lagH * HOUR; if (arr > measured.asOf && arr <= NOW) added += c.lbs; }
     let est = measured.lbs - rate * el / DAY + added;
     if (cap) est = Math.min(est, cap);
     est = Math.max(0, est);
@@ -344,7 +345,7 @@ function currentLevel(loc, d, v, row, cl, cap) {
   if (!cap || !cl.length) return null;
   const startE = NOW - 28 * DAY;
   const evs = [];
-  for (const c of cl) { const arr = c.stop + ARRIVAL_LAG_H * HOUR; if (arr >= startE && arr <= NOW) evs.push({ t: arr, lbs: c.lbs }); }
+  for (const c of cl) { const arr = c.stop + row.lagH * HOUR; if (arr >= startE && arr <= NOW) evs.push({ t: arr, lbs: c.lbs }); }
   const step = (init) => {
     let lvl = init, t = startE;
     const all = evs.slice().sort((a, b) => a.t - b.t);
@@ -393,39 +394,69 @@ function eventsFor(loc, d) {
   return null;
 }
 
+// One-to-one-ish matching of truck trips (clusters) to detected bin fills (events).
+// Events are taken in time order; each goes to the EARLIEST trip whose window contains it and which
+// still has at least 40% of the event's pounds left unaccounted for. A trip can absorb several events
+// (two bins filled from one truck); a fill that no open trip can absorb is left unclaimed.
+function matchLoc(cl, E) {
+  const rem = cl.map((c) => c.lbs), got = cl.map(() => []), claimed = new Set();
+  if (!E) return { got, claimed };
+  const order = E.ev.map((e, i) => i).sort((a, b) => E.ev[a].t - E.ev[b].t);
+  for (const i of order) {
+    const e = E.ev[i];
+    for (let j = 0; j < cl.length; j++) {
+      const c = cl[j];
+      if (E.from && c.stop < E.from) continue;   // predates sensor history: can't be checked, so it must not absorb later fills
+      const stopKey = ctKey(c.stop), startKey = ctKey(c.start);
+      const inWin = e.daily ? (e.date >= startKey && e.date <= addDays(stopKey, 2))
+        : (e.t >= c.start - MATCH_BEFORE_H * HOUR && e.t <= c.stop + MATCH_AFTER_H * HOUR);
+      if (inWin && rem[j] >= 0.4 * e.lbs) { got[j].push(e); rem[j] -= e.lbs; claimed.add(i); break; }
+    }
+  }
+  return { got, claimed };
+}
+
+// Typical hours from "batch finished" to "feed in the bin" at this location, learned from matched fills.
+function estimateLag(loc, d, cl) {
+  const E = eventsFor(loc, d);
+  if (!E || E.ev.some((e) => e.daily)) return ARRIVAL_LAG_H;
+  const { got } = matchLoc(cl, E);
+  const lags = [];
+  got.forEach((g, j) => { if (g.length) lags.push(Math.max(0, (Math.min(...g.map((e) => e.t)) - cl[j].stop) / HOUR)); });
+  if (lags.length < 2) return ARRIVAL_LAG_H;
+  lags.sort((a, b) => a - b);
+  return Math.min(MATCH_AFTER_H, Math.max(ARRIVAL_LAG_H, lags[Math.floor(lags.length / 2)]));
+}
+
 function reconcile(L, d, clustersByLoc) {
   const rows = [];
   for (const row of L) {
     const cl = clustersByLoc[row.loc] || [];
     const E = eventsFor(row.loc, d);
-    const claimed = new Set();
-    for (const c of cl) {
+    const { got, claimed } = matchLoc(cl, E);
+    cl.forEach((c, j) => {
       const base = { loc: row.loc, name: row.name, stop: c.stop, start: c.start, mill: c.lbs, tickets: c.tickets.map((t) => t.n), group: c.tickets[0].group };
-      if (!E) { rows.push({ ...base, status: 'No level feed', sev: 'mute', detected: null }); continue; }
-      if (E.from && c.stop < E.from) { rows.push({ ...base, status: 'Before sensor history', sev: 'mute', detected: null }); continue; }
-      const stopKey = ctKey(c.stop), startKey = ctKey(c.start);
-      const hit = [];
-      E.ev.forEach((e, i) => {
-        if (claimed.has(i)) return;
-        const inWin = e.daily ? (e.date >= startKey && e.date <= addDays(stopKey, 2))
-          : (e.t >= c.start - MATCH_BEFORE_H * HOUR && e.t <= c.stop + MATCH_AFTER_H * HOUR);
-        if (inWin) { hit.push(e); claimed.add(i); }
-      });
-      const det = hit.reduce((x, e) => x + e.lbs, 0);
+      if (!E) { rows.push({ ...base, status: 'No level feed', sev: 'mute', detected: null }); return; }
+      if (E.from && c.stop < E.from) { rows.push({ ...base, status: 'Before sensor history', sev: 'mute', detected: null }); return; }
+      const hit = got[j];
       if (!hit.length) {
         const pending = NOW < c.stop + MATCH_AFTER_H * HOUR;
         const awaiting = E.syncAt && c.stop + ARRIVAL_LAG_H * HOUR > E.syncAt;   // sensors haven't synced since it was batched
         const stale = row.level && row.level.stale;
         if (awaiting) rows.push({ ...base, detected: null, status: 'Awaiting next sensor sync', sev: 'info' });
         else rows.push({ ...base, detected: 0, status: pending ? 'Pending' : (stale ? 'Not detected (stale sensor)' : 'No fill detected'), sev: pending ? 'info' : 'bad' });
-        continue;
+        return;
       }
+      const det = hit.reduce((x, e) => x + e.lbs, 0);
       const diff = det - c.lbs, tol = Math.max(0.10 * c.lbs, 1200);
       let status = 'Matches', sev = 'ok';
-      if (diff < -tol) { status = 'Bin gained less'; sev = 'bad'; }
-      else if (diff > tol) { status = 'Bin gained more'; sev = 'bad'; }
-      rows.push({ ...base, detected: det, diff, status, sev, src: E.src, evs: hit });
-    }
+      if (diff < -tol) {
+        // a partly-filled trip may still be unloading into its second bin
+        const open = NOW < c.stop + MATCH_AFTER_H * HOUR;
+        status = open ? 'Partly filled so far' : 'Bin gained less'; sev = open ? 'info' : 'bad';
+      } else if (diff > tol) { status = 'Bin gained more'; sev = 'bad'; }
+      rows.push({ ...base, detected: det, diff, status, sev, src: E.src, evs: hit, lagH: (Math.min(...hit.map((e) => e.t)) - c.stop) / HOUR });
+    });
     if (E) {
       E.ev.forEach((e, i) => {
         if (claimed.has(i)) return;
@@ -603,7 +634,7 @@ function renderRecon() {
     }
     h += '</tbody></table></div>';
   }
-  h += `<div class="note small muted">A batch is matched to the bin fill(s) detected from the level sensor within ${MATCH_AFTER_H} hours after it finishes. Tickets for the same location less than ${CLUSTER_GAP_H} hours apart count as one truck trip. A difference over 10% (minimum 1,200 lb) is flagged. "No level feed" means that location has no sensor level data yet, so only the 28-day shipped-vs-eaten check applies.</div>`;
+  h += `<div class="note small muted">A batch is matched to the bin fill(s) detected from the level sensor in the ${MATCH_AFTER_H} hours after it finishes (feed often reaches the bin the next day). Tickets for the same location less than ${CLUSTER_GAP_H} hours apart count as one truck trip. A difference over 10% (minimum 1,200 lb) is flagged. "No level feed" means that location has no sensor level data yet, so only the 28-day shipped-vs-eaten check applies.</div>`;
   el.innerHTML = h;
   document.getElementById('reconSel').onchange = (e) => { S.recon = +e.target.value; render(); };
   document.getElementById('reconBad').onchange = (e) => { S.onlyBad = e.target.checked; render(); };
@@ -618,7 +649,7 @@ function renderNotes() {
   items.push(ap.levelByLocation ? `AP: daily bin levels are live for ${Object.keys(ap.levelByLocation).join(', ')}. Deliveries are inferred from day-over-day level change plus consumption.` : 'AP: level storage not deployed yet.');
   items.push(bt.schemaProbe ? (bt.schemaProbe.error ? 'BarnTools: schema probe failed: ' + bt.schemaProbe.error : 'BarnTools: no level feed yet. A schema probe has recorded which queries might expose bin levels (see /api/barntools-data → schemaProbe).') : 'BarnTools: consumption only. No bin level feed, so Schaap North and Raak are estimated.');
   items.push('Location 12 (Schaap South), the nurseries and any location without a bin scale have no vendor data; their rate comes from mill deliveries.');
-  items.push('Vendor syncs run once a day (Vercel Hobby). A level can be up to ~24 h old, so it is rolled forward using the eating rate and any mill tickets since. Tickets are assumed to reach the bin ' + ARRIVAL_LAG_H + ' h after the batch finishes.');
+  items.push('Vendor syncs run once a day (Vercel Hobby). A level can be up to ~24 h old, so it is rolled forward using the eating rate and any mill tickets since. A batch is assumed to reach the bin ' + ARRIVAL_LAG_H + ' h after it finishes unless the sensor history at that location shows a longer typical delay.');
   items.push('Scale consumption is bucketed by UTC day (the existing sync convention), so a "day" runs 7 pm–7 pm Central.');
   items.push('Delivery detection is a threshold rule (a rise of at least ' + fmt(DELIVERY_MIN_LBS) + ' lb with small dips allowed). If it misses real fills or invents them, the two constants at the top of api/binmaster-sync.js can be tuned.');
   const san = (M.L || []).filter((r) => r.level && r.level.measured && r.cap && r.level.raw > r.cap * 1.25).map((r) => r.name);
