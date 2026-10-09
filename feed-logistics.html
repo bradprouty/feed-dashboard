@@ -77,12 +77,14 @@
     <button class="tab on" data-p="plan">Delivery plan</button>
     <button class="tab" data-p="levels">Bin levels &amp; consumption</button>
     <button class="tab" data-p="recon">Batch vs delivery</button>
+    <button class="tab" data-p="mis">Misdelivery check</button>
     <button class="tab" data-p="notes">Data notes</button>
   </div>
   <div id="loading">Loading data…</div>
   <div class="panel on" id="p-plan"></div>
   <div class="panel" id="p-levels"></div>
   <div class="panel" id="p-recon"></div>
+  <div class="panel" id="p-mis"></div>
   <div class="panel" id="p-notes"></div>
 </div>
 
@@ -105,6 +107,8 @@ const MATCH_BEFORE_H = 1;
 const DELIVERY_MIN_LBS = 1500;          // matches api/binmaster-sync.js; also used for AP's day-over-day inference
 const AP_INFER_MIN_LBS = 3000;         // AP gives one level + one consumption number per day, so inferred fills must be bigger to beat timing noise
 const STALE_LEVEL_H = 30;               // level reading older than this is called stale
+const ROUTE_GROUPS = [{ name: 'Schaap', locs: ['11', '12', '913', '914'] }];   // barns fed by one truck/driver: used to look for feed delivered to the wrong barn
+const MIN_LAG_H = 0.4;                  // fastest batch-to-bin delay seen at any barn
 const SENSOR_BIN_COUNT = { '21': 2 };   // Brouwer has 4 bins in FoxPro but only 2 have sensors
 const VENDORS = { binmaster: 'BinMaster', barntools: 'BarnTools', ap: 'AP' };
 
@@ -316,7 +320,8 @@ function buildModel(d) {
     if (bad) r.flags.push({ k: 'bad', t: bad + ' delivery mismatch' + (bad > 1 ? 'es' : ''), tip: 'See the "Batch vs delivery" tab.' });
   }
 
-  return { todayKey, L, recon, vendorMeta };
+  const mis = misdelivery(d, clustersByLoc);
+  return { todayKey, L, recon, vendorMeta, mis };
 }
 
 function currentLevel(loc, d, v, row, cl, cap) {
@@ -473,6 +478,91 @@ function reconcile(L, d, clustersByLoc) {
   return { rows };
 }
 
+/* ----------------------------------------------------- misdelivery check */
+// Hungarian algorithm (min-cost assignment, rows <= cols). Returns col index per row.
+function hungarian(cost) {
+  const n = cost.length, m = cost[0].length, INF = 1e12;
+  const u = new Array(n + 1).fill(0), v = new Array(m + 1).fill(0), p = new Array(m + 1).fill(0), way = new Array(m + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    p[0] = i; let j0 = 0;
+    const minv = new Array(m + 1).fill(INF), used = new Array(m + 1).fill(false);
+    do {
+      used[j0] = true;
+      const i0 = p[j0]; let delta = INF, j1 = 0;
+      for (let j = 1; j <= m; j++) if (!used[j]) {
+        const cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+        if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+        if (minv[j] < delta) { delta = minv[j]; j1 = j; }
+      }
+      for (let j = 0; j <= m; j++) { if (used[j]) { u[p[j]] += delta; v[j] -= delta; } else minv[j] -= delta; }
+      j0 = j1;
+    } while (p[j0] !== 0);
+    do { const j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0);
+  }
+  const ans = new Array(n).fill(-1);
+  for (let j = 1; j <= m; j++) if (p[j]) ans[p[j] - 1] = j - 1;
+  return ans;
+}
+
+// For barns served by one truck: take every bin fill the sensors saw, and every mill truck trip for
+// any barn in the group, and find the most plausible one-to-one pairing (fill comes after the batch,
+// pounds roughly agree, shorter delay preferred, own-barn pairing preferred). A fill whose best
+// ticket belongs to a DIFFERENT barn is reported as a possible misdelivery.
+function misdelivery(d, clustersByLoc, names) {
+  const out = [];
+  for (const g of ROUTE_GROUPS) {
+    const fills = [], trips = [];
+    let from = null;
+    for (const loc of g.locs) {
+      const E = eventsFor(loc, d);
+      if (E) {
+        if (E.from != null) from = Math.max(from == null ? 0 : from, E.from);
+        const evs = E.ev.filter((e) => !e.daily).slice().sort((a, b) => a.t - b.t);
+        let cur = null;
+        for (const e of evs) {
+          if (E.from && e.t < E.from) continue;
+          if (cur && e.t - cur.last <= 3 * HOUR) { cur.lbs += e.lbs; cur.last = e.t; cur.bins.push(e.bin); }
+          else { cur = { loc, t: e.t, last: e.t, lbs: e.lbs, bins: [e.bin] }; fills.push(cur); }
+        }
+      }
+    }
+    for (const loc of g.locs) for (const c of clustersByLoc[loc] || []) trips.push({ loc, c });
+    // only consider trips late enough to be covered by sensor history of at least one barn
+    const t0 = Math.min(...g.locs.map((l) => { const E = eventsFor(l, d); return E && E.from ? E.from : Infinity; }));
+    const usableTrips = trips.filter((x) => isFinite(t0) && x.c.stop >= t0 - 1 * HOUR).sort((a, b) => a.c.stop - b.c.stop);
+    if (!fills.length) { out.push({ group: g, rows: [], note: 'No sensor fills recorded yet for this group.', unsensed: [], t0 }); continue; }
+    fills.sort((a, b) => a.t - b.t);
+    const U = 3, BIG = 1e6;
+    const cost = fills.map((f) => {
+      const row = usableTrips.map((tr) => {
+        const lag = (f.t - tr.c.stop) / HOUR;
+        if (lag < MIN_LAG_H || lag > 48) return BIG;
+        const rel = Math.abs(f.lbs - tr.c.lbs) / tr.c.lbs;
+        if (rel > 0.2 && Math.abs(f.lbs - tr.c.lbs) > 2500) return BIG;
+        // Own-barn pairings are strongly preferred, so the result is the FEWEST cross-barn deliveries
+        // consistent with the data (a conservative reading); delay only breaks ties.
+        return 0.15 * lag / 24 + rel * 4 + (tr.loc === f.loc ? 0 : 1.5);
+      });
+      for (let k = 0; k < fills.length; k++) row.push(U);   // "no ticket explains this fill"
+      return row;
+    });
+    const asg = hungarian(cost);
+    const used = new Set(); const rows = [];
+    fills.forEach((f, i) => {
+      const j = asg[i];
+      if (j < 0 || j >= usableTrips.length || cost[i][j] >= BIG) { rows.push({ fill: f, trip: null, kind: 'unexplained' }); return; }
+      const tr = usableTrips[j]; used.add(j);
+      // could the barn's OWN tickets have explained it? (same-barn trips in window that are free or matched elsewhere)
+      const own = usableTrips.filter((x) => x.loc === f.loc && (f.t - x.c.stop) / HOUR >= MIN_LAG_H && (f.t - x.c.stop) / HOUR <= 48);
+      rows.push({ fill: f, trip: tr, kind: tr.loc === f.loc ? 'own' : 'cross', lag: (f.t - tr.c.stop) / HOUR, ownCandidates: own.length });
+    });
+    const sensed = new Set(g.locs.filter((l) => eventsFor(l, d)));
+    const unmatchedTrips = usableTrips.filter((x, j) => !used.has(j));
+    out.push({ group: g, rows, unmatchedTrips, sensed, t0 });
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------ delivery plan */
 function plan(row, horizonDays) {
   const out = [];
@@ -543,6 +633,7 @@ function render() {
   const low = active.filter((r) => r.daysLeft != null && r.daysLeft < S.reserveDays);
   const devs = active.filter((r) => r.flags.some((f) => /Eating|No consumption|Yesterday/.test(f.t)));
   const mism = M.recon.rows.filter((x) => x.sev === 'bad' && x.stop > NOW - S.recon * DAY);
+  const crossCount = M.mis.reduce((n, g) => n + g.rows.filter((x) => x.kind === 'cross').length, 0);
 
   // freshness
   const vm = M.vendorMeta, fr = [];
@@ -558,11 +649,13 @@ function render() {
     kpi(fmt(lbs), `lbs to deliver · ${R[S.range][2].toLowerCase()}`, '') +
     kpi(low.length, 'locations under ' + S.reserveDays + ' day of feed', low.length ? 'bad' : '') +
     kpi(devs.length, 'consumption deviations', devs.length ? 'warn' : '') +
-    kpi(mism.length, `delivery mismatches · ${S.recon}d`, mism.length ? 'bad' : '');
+    kpi(mism.length, `delivery mismatches · ${S.recon}d`, mism.length ? 'bad' : '') +
+    kpi(crossCount, 'fills that match another barn\'s ticket', crossCount ? 'bad' : '');
 
   renderPlan(inRange, R);
   renderLevels();
   renderRecon();
+  renderMis();
   renderNotes();
 }
 function kpi(v, l, cls) { return `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`; }
@@ -642,6 +735,39 @@ function renderRecon() {
   el.innerHTML = h;
   document.getElementById('reconSel').onchange = (e) => { S.recon = +e.target.value; render(); };
   document.getElementById('reconBad').onchange = (e) => { S.onlyBad = e.target.checked; render(); };
+}
+
+function renderMis() {
+  const el = document.getElementById('p-mis');
+  const nm = (loc) => { const r = M.L.find((x) => x.loc === loc); return r ? r.name : 'Location ' + loc; };
+  let h = '';
+  for (const g of M.mis) {
+    const cross = g.rows.filter((x) => x.kind === 'cross'), own = g.rows.filter((x) => x.kind === 'own'), un = g.rows.filter((x) => x.kind === 'unexplained');
+    h += `<div class="note"><b>${esc(g.group.name)}</b> — barns: ${g.group.locs.map((l) => esc(nm(l)) + ' #' + esc(l)).join(', ')}.<br>
+      Sensor fills seen since ${esc(fmtTime(g.t0))}: <b>${g.rows.length}</b>.
+      ${pill('ok', own.length + ' fit the barn\'s own ticket')} ${pill(cross.length ? 'bad' : 'ok', cross.length + ' fit another barn\'s ticket')} ${un.length ? pill('warn', un.length + ' fit no ticket') : ''}<br>
+      <span class="muted small">Barns with no bin sensor: ${g.group.locs.filter((l) => !g.sensed || !g.sensed.has(l)).map((l) => esc(nm(l)) + ' #' + esc(l)).join(', ') || 'none'} — feed delivered there can't be seen directly.</span></div>`;
+    if (!g.rows.length) { h += `<div class="note">${esc(g.note || 'Nothing to compare yet.')}</div>`; continue; }
+    h += `<div class="tw"><table><thead><tr><th>Bin fill seen</th><th>Barn</th><th class="n">Gained</th><th>Best-matching mill ticket</th><th class="n">Ticket lb</th><th class="n">Delay</th><th>Verdict</th></tr></thead><tbody>`;
+    for (const x of g.rows.slice().sort((a, b) => b.fill.t - a.fill.t)) {
+      const f = x.fill, tr = x.trip;
+      let verdict;
+      if (x.kind === 'own') verdict = pill('ok', 'Own barn\'s ticket');
+      else if (x.kind === 'cross') verdict = pill('bad', `Went to ${nm(f.loc)}, ticket was for ${nm(tr.loc)}`, x.ownCandidates === 0 ? `No ${nm(f.loc)} ticket was early enough to supply this fill, so the ticket for another barn is the only explanation.` : `${nm(f.loc)} had its own ticket in range, but it is needed for a different fill.`) +
+        `<div class="small muted">${x.ownCandidates === 0 ? 'No ticket for this barn could have supplied it' : 'Own ticket was needed for another fill'}</div>`;
+      else verdict = pill('warn', 'No ticket fits');
+      h += `<tr><td>${esc(fmtTime(f.t))}</td><td><b>${esc(nm(f.loc))}</b> <span class="muted small">#${esc(f.loc)}</span><div class="small muted">${esc(f.bins.join(' + '))}</div></td><td class="n">${fmt(f.lbs)}</td>
+        <td>${tr ? `#${esc(tr.c.tickets.map((t) => t.n).join(', #'))} for <b>${esc(nm(tr.loc))}</b><div class="small muted">finished ${esc(fmtTime(tr.c.stop))}</div>` : '—'}</td>
+        <td class="n">${tr ? fmt(tr.c.lbs) : '—'}</td><td class="n">${x.lag != null ? x.lag.toFixed(1) + ' h' : '—'}</td><td>${verdict}</td></tr>`;
+    }
+    h += '</tbody></table></div>';
+    if (g.unmatchedTrips && g.unmatchedTrips.length) {
+      h += `<div class="note small"><b>Mill tickets with no sensor fill seen:</b> ` + g.unmatchedTrips.sort((a, b) => a.c.stop - b.c.stop).map((t) => `#${esc(t.c.tickets[0].n)} ${esc(nm(t.loc))} ${fmt(t.c.lbs)} lb (${esc(fmtTime(t.c.stop))})`).join('; ') +
+        `. These went into a barn without a sensor, or were delivered before sensor history began, or were not delivered.</div>`;
+    }
+  }
+  h += `<div class="note small muted"><b>How to read this.</b> Every sensor-detected fill is paired with a mill ticket (finished 0.4–48 hours earlier, similar pounds) so that as many fills as possible land on their own barn's ticket. Only fills that cannot be explained that way show as another barn's ticket, so the count is a floor, not a guess at the worst case. This is indirect evidence: it shows where feed arrived, not who drove it. Drivers' load sheets or a sensor on the remaining barn would close the gap.</div>`;
+  el.innerHTML = h;
 }
 
 function renderNotes() {
