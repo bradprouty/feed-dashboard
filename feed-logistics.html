@@ -47,6 +47,11 @@
   .meter { width:120px; height:10px; background:var(--chip); border-radius:6px; overflow:hidden; display:inline-block; vertical-align:middle; }
   .meter > i { display:block; height:100%; }
   .daygrp td { background:var(--chip); font-weight:650; }
+  tr.expand { cursor:pointer; } tr.expand:hover td { background:var(--chip); }
+  .car { display:inline-block; width:14px; color:var(--muted); transition:transform .1s; } tr.open .car { transform:rotate(90deg); }
+  tr.bindet > td { background:var(--bg, transparent); padding:4px 10px 12px 34px; }
+  table.bt { width:auto; min-width:60%; border:1px solid var(--line); margin:4px 0; } table.bt th, table.bt td { padding:5px 10px; }
+  .meter.sm { width:90px; }
   .muted { color:var(--muted); } .small { font-size:12px; }
   .note { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:10px 0; font-size:13px; }
   .note b { font-weight:650; }
@@ -112,7 +117,14 @@ const MIN_LAG_H = 0.4;                  // fastest batch-to-bin delay seen at an
 const SENSOR_BIN_COUNT = { '21': 2 };   // Brouwer has 4 bins in FoxPro but only 2 have sensors
 const VENDORS = { binmaster: 'BinMaster', barntools: 'BarnTools', ap: 'AP' };
 
-const S = { reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14 };
+// BarnTools reports tandem pairs / sensors by id; show them by name
+const BT_LABELS = {
+  '8ed1a28e-3c15-4ef1-8ed9-82c8a0b372a0': 'West bins (2 bins combined)',
+  'ba9d7582-7904-4507-be46-9941f4d2e471': 'East bins (2 bins combined)',
+  '1027012338': 'South bin', '1027015203': 'North bin',
+  '77843290-330e-4755-b7af-484e714a5f9c': 'East + West bins (combined)',
+};
+const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14 };
 let NOW = Date.now();
 let D = null;       // raw loaded data
 let M = null;       // computed model
@@ -194,6 +206,8 @@ function buildModel(d) {
     const k = String(b.location_i);
     (capByLoc[k] = capByLoc[k] || []).push(Number(b.bin_capaci) || 0);
   }
+  const foxBinsByLoc = {};
+  for (const b of d.bins || []) { if (b.active === false) continue; (foxBinsByLoc[String(b.location_i)] = foxBinsByLoc[String(b.location_i)] || []).push({ name: b.bin_name || b.f_bin_id, cap: Number(b.bin_capaci) || 0 }); }
   const capOf = (k) => {
     const arr = (capByLoc[k] || []).filter((x) => x > 0).sort((a, b) => b - a);
     const n = SENSOR_BIN_COUNT[k];
@@ -243,6 +257,8 @@ function buildModel(d) {
     const cap = capOf(loc);
     const cl = clustersByLoc[loc] || [];
     const row = { loc, name, cap, vendor: v ? v.vendor : null, clusters: cl, flags: [] };
+    row.foxBins = (foxBinsByLoc[loc] || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    { const sorted = (capByLoc[loc] || []).filter((x) => x > 0).sort((a, b) => b - a); const n = SENSOR_BIN_COUNT[loc]; row.binCaps = n ? sorted.slice(0, n) : sorted; }
 
     // ---- consumption stats (scale data)
     row.cons = null;
@@ -254,7 +270,7 @@ function buildModel(d) {
       const at = (i) => val(addDays(lastComplete, -i));
       const days = (from, to) => { const o = []; for (let i = from; i <= to; i++) { const x = at(i); if (x !== undefined) o.push(x); } return o; };
       const last7 = days(0, 6), recent3 = days(0, 2), base = days(3, 16);
-      const spark = []; for (let i = 13; i >= 0; i--) spark.push(at(i) == null ? 0 : at(i));
+      const spark = []; for (let i = 6; i >= 0; i--) spark.push(at(i) == null ? 0 : at(i));
       row.cons = {
         lastComplete, rate7: mean(last7), recent3: mean(recent3), baseMean: mean(base), baseSd: sd(base), baseN: base.length,
         yesterday: at(0), spark, at, first,
@@ -660,6 +676,49 @@ function render() {
 }
 function kpi(v, l, cls) { return `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`; }
 
+/* per-bin drill-down: which bin in a barn is lowest, and how a delivery should be split */
+function binDetail(r, p) {
+  const lv = r.level;
+  const sensed = lv && lv.measured && lv.bins && lv.bins.length ? lv.bins : null;
+  if (!sensed) {
+    const list = r.foxBins.length ? r.foxBins.map((b) => `${esc(b.name)} (${fmt(b.cap)} lb)`).join(', ') : 'no bins on file';
+    return `<div class="small muted">No per-bin sensor readings for this barn${r.vendor ? ' (the ' + esc(VENDORS[r.vendor]) + ' feed only gives a barn total here)' : ''}, so the bins can't be told apart. Bins on file: ${list}. The delivery is sized from the barn total${lv ? ' (' + fmt(lv.lbs) + (lv.hi ? '–' + fmt(lv.hi) : '') + ' lb now)' : ''}.</div>`;
+  }
+  const n = sensed.length;
+  const caps = r.binCaps || [];
+  const equal = caps.length >= n && caps.slice(0, n).every((c) => c === caps[0]);
+  const perCap = r.cap && (equal || n === 1) ? r.cap / n : null;
+  const rawSum = sensed.reduce((x, b) => x + b.lbs, 0) || 1;
+  const scale = lv.rolled && lv.lbs > 0 ? lv.lbs / rawSum : 1;     // bring each bin forward by the same ratio as the barn total
+  const rows = sensed.map((b) => {
+    const lbl = BT_LABELS[b.label] || b.label;
+    const now = Math.min(perCap || Infinity, b.lbs * scale);
+    return { lbl, read: b.lbs, t: Date.parse(b.t), now, pct: perCap ? now / perCap * 100 : null, need: perCap ? Math.max(0, perCap * S.fillPct / 100 - now) : 0 };
+  });
+  const order = rows.slice().sort((a, b) => (a.pct == null ? a.now : a.pct) - (b.pct == null ? b.now : b.pct));
+  const first = order[0];
+  const needSum = rows.reduce((x, b) => x + b.need, 0);
+  const showSplit = p && needSum > 0 && p.key <= addDays(M.todayKey, 1);
+  let h = `<table class="bt"><thead><tr><th>Bin</th><th class="n">Last reading</th><th>Read</th><th class="n">Est. now</th><th>Full</th>${showSplit ? '<th class="n">Put in this bin</th>' : ''}</tr></thead><tbody>`;
+  for (const b of rows) {
+    const col = b.pct == null ? 'var(--accent)' : b.pct < 15 ? 'var(--bad)' : b.pct < 35 ? 'var(--warn)' : 'var(--ok)';
+    h += `<tr><td><b>${esc(b.lbl)}</b>${b === first && n > 1 ? ' ' + pill('bad', 'lowest') : ''}</td><td class="n">${fmt(b.read)} lb</td><td class="small muted">${esc(ago(b.t))}</td>
+      <td class="n">${fmt(b.now)} lb</td>
+      <td>${b.pct == null ? '<span class="muted small">—</span>' : `<span class="meter sm"><i style="width:${Math.max(0, Math.min(100, b.pct)).toFixed(0)}%;background:${col}"></i></span> <span class="small">${Math.round(b.pct)}%</span>`}</td>
+      ${showSplit ? `<td class="n"><b>${b.need > 0 ? fmt(Math.round(p.lbs * b.need / needSum / 100) * 100) + ' lb' : '—'}</b></td>` : ''}</tr>`;
+  }
+  h += '</tbody></table>';
+  h += `<div class="small muted">${perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived (split equally, since the vendors report consumption per barn, not per bin).${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
+  return h;
+}
+function bindExpand(el) {
+  el.querySelectorAll('tr.expand').forEach((tr) => tr.onclick = () => {
+    const k = tr.dataset.k, det = tr.nextElementSibling;
+    const open = det.hasAttribute('hidden');
+    if (open) { det.removeAttribute('hidden'); tr.classList.add('open'); S.open[k] = 1; } else { det.setAttribute('hidden', ''); tr.classList.remove('open'); delete S.open[k]; }
+  });
+}
+
 function renderPlan(items, R) {
   const el = document.getElementById('p-plan');
   const label = R[S.range][2];
@@ -676,38 +735,44 @@ function renderPlan(items, R) {
     h += `<tr class="daygrp"><td colspan="7">${fmtDay(key)}${key === M.todayKey ? ' (today)' : ''} — ${g.reduce((x, p) => x + p.trucks, 0)} truck${g.reduce((x, p) => x + p.trucks, 0) === 1 ? '' : 's'}, ${fmt(g.reduce((x, p) => x + p.lbs, 0))} lb</td></tr>`;
     for (const p of g.sort((a, b) => b.urgent - a.urgent || b.lbs - a.lbs)) {
       const r = M.L.find((x) => x.loc === p.loc);
-      h += `<tr><td><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}</td>
+      const ek = `p:${p.loc}:${p.key}`;
+      h += `<tr class="expand${S.open[ek] ? ' open' : ''}" data-k="${ek}" title="Click to see the bins"><td><span class="car">▸</span><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}</td>
         <td class="n">${fmt(p.lbs)} lb</td><td class="n">${p.trucks}</td>
         <td class="n">${fmt(r.level.lbs)}${r.cap ? ` <span class="muted small">/ ${fmt(r.cap)}</span>` : ''}</td>
         <td class="n">${fmt(r.rate)}</td>
         <td>${r.runOut ? fmtDay(ctKey(r.runOut)) : '—'}</td>
-        <td>${p.est ? pill('mute', 'estimated level', 'No bin level feed here. Level is estimated from mill tickets minus scale consumption.') : pill('ok', 'measured level', 'Level from the bin sensor ' + ago(r.level.asOf))}</td></tr>`;
+        <td>${p.est ? pill('mute', 'estimated level', 'No bin level feed here. Level is estimated from mill tickets minus scale consumption.') : pill('ok', 'measured level', 'Level from the bin sensor ' + ago(r.level.asOf))}</td></tr>
+        <tr class="bindet"${S.open[ek] ? '' : ' hidden'}><td colspan="7">${binDetail(r, p)}</td></tr>`;
     }
   }
   el.innerHTML = h + '</tbody></table></div>' +
-    `<div class="note small muted">Method: each bin's level is rolled forward at its recent eating rate. A delivery is scheduled on the day the bin would drop below ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed, sized to refill to ${S.fillPct}% of capacity, and split into ${fmt(TRUCK_LBS)} lb trucks. Change the reserve and fill settings at the top.</div>`;
+    `<div class="note small muted">Click a row to see each bin in that barn and which one to fill first. Method: each bin's level is rolled forward at its recent eating rate. A delivery is scheduled on the day the bin would drop below ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed, sized to refill to ${S.fillPct}% of capacity, and split into ${fmt(TRUCK_LBS)} lb trucks. Change the reserve and fill settings at the top.</div>`;
+  bindExpand(el);
 }
 
 function renderLevels() {
   const el = document.getElementById('p-levels');
   const rows = M.L.slice().sort((a, b) => (a.idle - b.idle) || ((a.daysLeft == null ? 99 : a.daysLeft) - (b.daysLeft == null ? 99 : b.daysLeft)));
-  let h = `<div class="tw"><table><thead><tr><th>Location</th><th>Source</th><th>Bin level</th><th class="n">Level (lb)</th><th class="n">Days left</th><th class="n">Eats / day</th><th class="n">Normal</th><th class="n">Last 3d</th><th>14-day</th><th>Flags</th></tr></thead><tbody>`;
+  let h = `<div class="tw"><table><thead><tr><th>Location</th><th>Source</th><th>Bin level</th><th class="n">Level (lb)</th><th class="n">Days left</th><th class="n">Eats / day</th><th class="n">Normal</th><th class="n">Last 3d</th><th>7-day</th><th>Flags</th></tr></thead><tbody>`;
   for (const r of rows) {
     const c = r.cons;
     const lv = r.level;
     const lvTxt = lv ? (lv.measured ? fmt(lv.lbs) + (lv.rolled ? '<span class="muted small" title="Rolled forward from the last sensor reading"> ~</span>' : '') : `${fmt(lv.lbs)}–${fmt(lv.hi)}`) : '—';
-    h += `<tr${r.idle ? ' style="opacity:.55"' : ''}>
-      <td><b>${esc(r.name)}</b> <span class="muted small">#${esc(r.loc)}</span>${r.idle ? ' ' + pill('mute', 'idle') : ''}</td>
+    const lk = `l:${r.loc}`;
+    h += `<tr class="expand${S.open[lk] ? ' open' : ''}" data-k="${lk}" title="Click to see the bins"${r.idle ? ' style="opacity:.55"' : ''}>
+      <td><span class="car">▸</span><b>${esc(r.name)}</b> <span class="muted small">#${esc(r.loc)}</span>${r.idle ? ' ' + pill('mute', 'idle') : ''}</td>
       <td class="small">${esc(r.vendor ? VENDORS[r.vendor] : 'mill only')}${lv ? `<br><span class="muted">${lv.measured ? 'level ' + esc(ago(lv.asOf)) : 'level estimated'}</span>` : ''}</td>
       <td>${meter(r)}</td><td class="n">${lvTxt}</td>
       <td class="n">${r.daysLeft != null && !r.idle ? r.daysLeft.toFixed(1) : '—'}</td>
       <td class="n">${fmt(r.rate)}<br><span class="muted small">${esc(r.rateSrc || '')}</span></td>
       <td class="n">${c ? fmt(c.baseMean) : '—'}</td><td class="n">${c ? fmt(c.recent3) : '—'}</td>
       <td>${c ? spark(c.spark, r.flags.some((f) => f.k === 'bad') ? 'var(--bad)' : 'var(--accent)') : ''}</td>
-      <td>${flagsHtml(r)}</td></tr>`;
+      <td>${flagsHtml(r)}</td></tr>
+      <tr class="bindet"${S.open[lk] ? '' : ' hidden'}><td colspan="10">${binDetail(r, null)}</td></tr>`;
   }
   el.innerHTML = h + '</tbody></table></div>' +
-    `<div class="note small muted"><b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
+    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
+  bindExpand(el);
 }
 
 function renderRecon() {
