@@ -74,6 +74,7 @@
     <span class="muted" style="margin-left:10px">Fill bins to</span><input type="number" id="setFill" value="95" min="50" max="100" step="5"><span class="muted">%</span>
     <span class="muted" style="margin-left:10px">Flag deviation over</span><input type="number" id="setDev" value="20" min="5" max="80" step="5"><span class="muted">%</span>
     <span class="grow"></span>
+    <span class="muted small" id="autoNote" style="margin-right:8px"></span>
     <button class="chip" id="reloadBtn">Reload data</button>
   </div>
   <div id="err"></div>
@@ -864,16 +865,43 @@ function bindUI() {
   bind('setReserve', 'reserveDays'); bind('setFill', 'fillPct'); bind('setDev', 'devPct');
   document.getElementById('reloadBtn').onclick = load;
 }
-async function init() { bindUI(); await load(); }
+async function init() { bindUI(); await load(); startAuto(); }
 async function load() {
   document.getElementById('loading').style.display = 'block';
   NOW = Date.now();
   D = await loadAll();
+  lastLoad = Date.now();
   render();
+  showAuto();
+}
+
+// automatic refresh: re-read the data every few minutes while the page is open and visible
+const AUTO_MS = 5 * 60 * 1000;
+let lastLoad = Date.now(), autoBusy = false;
+function showAuto(note) {
+  const el = document.getElementById('autoNote');
+  if (el) el.textContent = note || `Auto-refreshes every ${AUTO_MS / 60000} min · checked ${new Date(lastLoad).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+}
+async function autoRefresh() {
+  if (autoBusy || document.hidden) return;
+  if (Date.now() - lastLoad < AUTO_MS - 5000) return;
+  autoBusy = true;
+  try {
+    const nd = await loadAll();
+    // keep what is on screen if the refresh came back empty (network blip)
+    const ok = nd && nd.errors.length === 0 && (nd.bins || []).length;
+    if (ok) { D = nd; NOW = Date.now(); lastLoad = Date.now(); render(); showAuto(); }
+    else showAuto('Auto-refresh failed, showing the last good data · will retry');
+  } catch (e) { showAuto('Auto-refresh failed, showing the last good data · will retry'); }
+  autoBusy = false;
+}
+function startAuto() {
+  setInterval(autoRefresh, 60 * 1000);                       // checks each minute, loads when 5 min have passed
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) autoRefresh(); });
 }
 
 window.FeedLogistics = { S, init, bindUI, load, render, buildModel, plan, rangeKeys, ctToEpoch, ctKey, addDays,
-  _set(d, now) { D = d; if (now) NOW = now; }, _model() { return M; } };
+  _set(d, now) { D = d; if (now) NOW = now; }, _auto: autoRefresh, _age(ms) { lastLoad = Date.now() - ms; }, _model() { return M; } };
 if (!window.__FL_NO_AUTO) init();
 })();
 </script>
