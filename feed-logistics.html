@@ -105,7 +105,7 @@ const SB_URL = 'https://ievchqnplgdcxigvsbpk.supabase.co/rest/v1';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlldmNocW5wbGdkY3hpZ3ZzYnBrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNzk2MDksImV4cCI6MjEwMzg1NTYwOX0.H1Oib2JJkNlLXcr1rp9l7aemqE53m1sm_2BSAAVXlr8';
 const TZ = 'America/Chicago';           // mill clock: batch_history timestamps are naive Central time
 const DAY = 86400000, HOUR = 3600000;
-const TRUCK_LBS = 25000;                // largest ticket the mill batches
+const TRUCK_LBS = 16000;                // the delivery truck used for every barn except the Schaap route (which uses the 50,000 lb trailer)
 const ARRIVAL_LAG_H = 3;                // assumed hours from batch finish to feed in the bin
 const CLUSTER_GAP_H = 4;                // tickets for one location closer than this = one truck trip
 const MATCH_AFTER_H = 36;               // a bin fill is looked for this long after the batch finishes (real data: most arrive 0-10 h later, some the next day)
@@ -732,15 +732,67 @@ function plan(row, horizonDays) {
     const endLevel = Math.min(row.cap, level - row.rate * (end - t) / DAY + inb);
     if (endLevel < reserve) {
       const have = Math.max(0, endLevel);
-      let lbs = Math.max(0, fillTo - have);
-      const rg = routeGroupOf(row.loc);
-      if (rg) lbs = Math.max(rg.loadLbs, Math.floor(lbs / rg.loadLbs) * rg.loadLbs);   // trailer loads go out as 25,000 lb halves
-      if (lbs >= 1000) out.push({ loc: row.loc, name: row.name, key, lbs, trucks: Math.ceil(lbs / TRUCK_LBS), urgent: d === 0 && level < reserve, est: !row.level.measured, runsOutToday: endLevel <= 0, inb: (row.inbound || []).reduce((a, x) => a + x.lbs, 0) });
-      level = have + lbs; t = end;
+      const need = Math.max(0, fillTo - have);
+      if (need >= 1000) {
+        // whole truckloads, refilling toward the target without overfilling the bins
+        const n = Math.max(1, Math.min(Math.ceil(need / TRUCK_LBS), Math.floor((row.cap - have) / TRUCK_LBS)));
+        const lbs = n * TRUCK_LBS;
+        out.push({ loc: row.loc, name: row.name, key, lbs, trucks: n, urgent: d === 0 && level < reserve, est: !row.level.measured, runsOutToday: endLevel <= 0, inb: (row.inbound || []).reduce((a, x) => a + x.lbs, 0) });
+        level = have + lbs;
+      } else level = have;
+      t = end;
     } else { level = endLevel; t = end; }
   }
   return out;
 }
+
+// Barns served by the dedicated trailer are planned two at a time: one 50,000 lb trailer = a 25,000 lb load for each barn of a
+// pair. A trailer is never sent half full, so when one barn needs feed its partner rides along if a whole load fits in it.
+function planPair(rows, pi, horizonDays, g) {
+  const out = [];
+  const st = rows.map((r) => ({ r, level: r.level.lbs, reserve: r.rate * S.reserveDays }));
+  let t = NOW;
+  const todayKey = ctKey(NOW);
+  for (let d = 0; d <= horizonDays; d++) {
+    const key = addDays(todayKey, d);
+    const end = dayStart(addDays(key, 1));
+    const ends = st.map((x) => {
+      const inb = (x.r.inbound || []).filter((y) => y.t > t && y.t <= end).reduce((a, y) => a + y.lbs, 0);
+      return Math.min(x.r.cap, x.level - x.r.rate * (end - t) / DAY + inb);
+    });
+    const need = ends.map((e, i) => e < st[i].reserve);
+    if (need.some(Boolean)) {
+      ends.forEach((e, i) => {
+        const x = st[i], have = Math.max(0, e);
+        const room = x.r.cap * S.fillPct / 100 - have;
+        const load = need[i] ? g.loadLbs : (room >= g.loadLbs ? g.loadLbs : 0);
+        if (load) out.push({ loc: x.r.loc, name: x.r.name, key, lbs: load, trucks: 0, trailer: true, pair: pi, topUp: !need[i], urgent: d === 0 && x.level < x.reserve,
+          est: !x.r.level.measured, runsOutToday: e <= 0, inb: (x.r.inbound || []).reduce((a, y) => a + y.lbs, 0) });
+        x.level = have + load;
+      });
+    } else ends.forEach((e, i) => { st[i].level = e; });
+    t = end;
+  }
+  return out;
+}
+
+function planAll(L, horizon) {
+  const out = [], done = new Set();
+  for (const g of ROUTE_GROUPS) g.pairs.forEach((pair, pi) => {
+    const rows = pair.map((l) => L.find((r) => r.loc === l)).filter(Boolean);
+    if (rows.length === 2 && rows.every((r) => r.rate > 0 && r.cap && r.level)) { rows.forEach((r) => done.add(r.loc)); out.push(...planPair(rows, pi, horizon, g)); }
+  });
+  for (const r of L) if (!done.has(r.loc)) out.push(...plan(r, horizon));
+  return out;
+}
+// truckloads and Schaap trailers in a set of planned deliveries (a trailer = 50,000 lb, never half a trailer)
+function countLoads(items) {
+  let trucks = 0; const tr = {};
+  for (const p of items) { if (p.trailer) { const k = p.key + '|' + p.pair; tr[k] = (tr[k] || 0) + p.lbs; } else trucks += p.trucks; }
+  const trailers = Object.values(tr).reduce((a, l) => a + Math.max(1, Math.ceil(l / ROUTE_GROUPS[0].trailerLbs)), 0);
+  return { trucks, trailers };
+}
+const loadsTxt = (c) => [c.trucks ? `${c.trucks} truck${c.trucks === 1 ? '' : 's'}` : '', c.trailers ? `${c.trailers} Schaap trailer${c.trailers === 1 ? '' : 's'}` : ''].filter(Boolean).join(' + ') || 'no loads';
 
 function rangeKeys() {
   const t = ctKey(NOW);
@@ -783,9 +835,9 @@ function render() {
 
   // plans
   const horizon = Math.max(14, Math.round((Date.parse(k1) - Date.parse(M.todayKey)) / DAY) + 1);
-  const all = M.L.flatMap((r) => plan(r, horizon));
+  const all = planAll(M.L, horizon);
   const inRange = all.filter((p) => p.key >= k0 && p.key <= k1);
-  const trucks = inRange.reduce((x, p) => x + p.trucks, 0), lbs = inRange.reduce((x, p) => x + p.lbs, 0);
+  const lc = countLoads(inRange), trucks = lc.trucks + lc.trailers, lbs = inRange.reduce((x, p) => x + p.lbs, 0);
   const active = M.L.filter((r) => !r.idle);
   const low = active.filter((r) => r.daysLeft != null && r.daysLeft < S.reserveDays);
   const devs = active.filter((r) => r.flags.some((f) => /Eating|No consumption|Yesterday/.test(f.t)));
@@ -803,7 +855,7 @@ function render() {
   document.getElementById('err').innerHTML = D.errors.length ? `<div class="err">Some data failed to load: ${esc(D.errors.join('; '))}</div>` : '';
 
   document.getElementById('kpis').innerHTML =
-    kpi(trucks, `truckloads · ${R[S.range][2].toLowerCase()}`, trucks ? '' : '') +
+    kpi(trucks, `loads · ${R[S.range][2].toLowerCase()} (${loadsTxt(lc)})`, '') +
     kpi(fmt(onWayLbs), `lb mixed, not yet delivered (${onWay.length} load${onWay.length === 1 ? '' : 's'})`, '') +
     kpi(fmt(lbs), `lbs to deliver · ${R[S.range][2].toLowerCase()}`, '') +
     kpi(low.length, 'locations under ' + S.reserveDays + ' day of feed', low.length ? 'bad' : '') +
@@ -863,23 +915,20 @@ function trailerCard(items) {
       `${t.name.replace(' + ', '/')} ${fmtDay(ctKey(t.mixed)).replace(/^\w+, /, '')} · ${stTxt[t.status]}`,
       t.loads.map((l) => `#${l.c.tickets.map((x) => x.n).join(', #')} ${locName(l.loc)} ${fmt(l.c.lbs)} lb`).join(' + ') + (t.repeat ? ' — same pair as the trailer before it' : ''))).join(' ');
     const repeats = recent.filter((t) => t.repeat).length;
-    // planned loads in the selected range
-    const mine = items.filter((p) => g.locs.includes(p.loc));
+    // planned trailers in the selected range
+    const mine = items.filter((p) => p.trailer && g.locs.includes(p.loc));
     const byDay = {};
-    for (const p of mine) { const pi = g.pairs.findIndex((x) => x.includes(p.loc)); ((byDay[p.key] = byDay[p.key] || {})[pi] = byDay[p.key][pi] || []).push(p); }
+    for (const p of mine) ((byDay[p.key] = byDay[p.key] || {})[p.pair] = byDay[p.key][p.pair] || []).push(p);
     let plan = '';
     for (const key of Object.keys(byDay).sort()) for (const [pi, arr] of Object.entries(byDay[key])) {
-      const tot = arr.reduce((a, p) => a + p.lbs, 0), trailers = Math.ceil(tot / g.trailerLbs);
-      const mates = g.pairs[pi].filter((l) => !arr.some((p) => p.loc === l));
-      const mateTxt = mates.map((l) => { const r = M.L.find((x) => x.loc === l); return r && r.level && r.cap ? `${esc(r.name)} is at ${Math.round(r.level.lbs / r.cap * 100)}%` : ''; }).filter(Boolean).join(', ');
-      plan += `<tr><td>${esc(fmtDay(key))}</td><td><b>${esc(g.pairNames[pi])}</b></td><td>${arr.map((p) => `${esc(p.name)} ${fmt(p.lbs)} lb`).join(' + ')}</td><td class="n">${fmt(tot)}</td><td class="n">${trailers}</td>
-        <td class="small muted">${mates.length ? 'Partner barn not due yet' + (mateTxt ? ' (' + mateTxt + ') — top it up on the same trailer' : '') : ''}</td></tr>`;
+      const tot = arr.reduce((a, p) => a + p.lbs, 0), trailers = Math.max(1, Math.ceil(tot / g.trailerLbs));
+      plan += `<tr><td>${esc(fmtDay(key))}</td><td><b>${esc(g.pairNames[pi])}</b></td><td>${arr.map((p) => `${esc(p.name)} ${fmt(p.lbs)} lb${p.topUp ? ' (rides along)' : ''}`).join(' + ')}</td><td class="n">${fmt(tot)}</td><td class="n">${trailers}</td></tr>`;
     }
     h += `<div class="note"><b>${esc(g.name)} trailer</b> <span class="muted small">(${fmt(g.trailerLbs)} lb = two ${fmt(g.loadLbs)} lb loads, pairs alternate)</span><br>
       <span class="small">Last mixed: <b>${esc(last.name)}</b> (${esc(fmtTime(last.mixed))}, ${esc(stTxt[last.status])}). Next to mix: <b>${esc(g.pairNames[nextPair])}</b>.</span>
       ${repeats ? ' ' + pill('warn', repeats + ' repeat' + (repeats > 1 ? 's' : '') + ' in the last 6', 'The same pair was mixed twice in a row. The alternation keeps both pairs evenly fed.') : ''}<br>
       <span class="small muted">Recent trailers (oldest to newest):</span> ${chips}
-      ${plan ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th>Day</th><th>Pair</th><th>Barns due</th><th class="n">Pounds</th><th class="n">Trailers</th><th></th></tr></thead><tbody>${plan}</tbody></table></div>` : `<div class="small muted" style="margin-top:6px">No ${esc(g.name)} deliveries are due in the selected range.</div>`}</div>`;
+      ${plan ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th>Day</th><th>Pair</th><th>Barns due</th><th class="n">Pounds</th><th class="n">Trailers</th></tr></thead><tbody>${plan}</tbody></table></div>` : `<div class="small muted" style="margin-top:6px">No ${esc(g.name)} deliveries are due in the selected range.</div>`}</div>`;
   });
   return h;
 }
@@ -942,12 +991,12 @@ function renderPlan(items, R) {
   let h = `<div class="tw"><table><thead><tr><th>Location</th><th class="n">Deliver</th><th class="n">Trucks</th><th class="n">Level now</th><th class="n">Eats / day</th><th>Runs out</th><th>Basis</th></tr></thead><tbody>`;
   for (const key of Object.keys(byDay).sort()) {
     const g = byDay[key];
-    h += `<tr class="daygrp"><td colspan="7">${fmtDay(key)}${key === M.todayKey ? ' (today)' : ''} — ${g.reduce((x, p) => x + p.trucks, 0)} truck${g.reduce((x, p) => x + p.trucks, 0) === 1 ? '' : 's'}, ${fmt(g.reduce((x, p) => x + p.lbs, 0))} lb</td></tr>`;
+    h += `<tr class="daygrp"><td colspan="7">${fmtDay(key)}${key === M.todayKey ? ' (today)' : ''} — ${loadsTxt(countLoads(g))}, ${fmt(g.reduce((x, p) => x + p.lbs, 0))} lb</td></tr>`;
     for (const p of g.sort((a, b) => b.urgent - a.urgent || b.lbs - a.lbs)) {
       const r = M.L.find((x) => x.loc === p.loc);
       const ek = `p:${p.loc}:${p.key}`;
-      h += `<tr class="expand${S.open[ek] ? ' open' : ''}" data-k="${ek}" title="Click to see the bins"><td><span class="car">▸</span><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}</td>
-        <td class="n">${fmt(p.lbs)} lb</td><td class="n">${p.trucks}</td>
+      h += `<tr class="expand${S.open[ek] ? ' open' : ''}" data-k="${ek}" title="Click to see the bins"><td><span class="car">▸</span><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}${p.topUp ? ' ' + pill('mute', 'rides along', 'Not due yet. It takes the other half of the trailer so the trailer goes out full.') : ''}</td>
+        <td class="n">${fmt(p.lbs)} lb</td><td class="n">${p.trailer ? '½ trailer' : p.trucks}</td>
         <td class="n">${fmt(r.level.lbs)}${r.cap ? ` <span class="muted small">/ ${fmt(r.cap)}</span>` : ''}</td>
         <td class="n">${fmt(r.rate)}</td>
         <td>${r.runOut ? fmtDay(ctKey(r.runOut)) : '—'}</td>
@@ -956,7 +1005,7 @@ function renderPlan(items, R) {
     }
   }
   el.innerHTML = pre + h + '</tbody></table></div>' +
-    `<div class="note small muted">Click a row to see each bin in that barn and which one to fill first. Method: each bin's level is rolled forward at its recent eating rate. A delivery is scheduled on the day the bin would drop below ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed, sized to refill to ${S.fillPct}% of capacity, and split into ${fmt(TRUCK_LBS)} lb trucks. Change the reserve and fill settings at the top.</div>`;
+    `<div class="note small muted">Click a row to see each bin in that barn and which one to fill first. Method: each bin's level is rolled forward at its recent eating rate. A delivery is scheduled on the day the bin would drop below ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed, sized to refill toward ${S.fillPct}% of capacity in whole ${fmt(TRUCK_LBS)} lb truckloads. Schaap barns are planned in pairs: one ${fmt(ROUTE_GROUPS[0].trailerLbs)} lb trailer carries ${fmt(ROUTE_GROUPS[0].loadLbs)} lb to each barn of the pair, and the other barn rides along if a whole load fits. Change the reserve and fill settings at the top.</div>`;
   bindExpand(el);
 }
 
