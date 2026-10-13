@@ -9,11 +9,13 @@
     --bg:#f5f6f4; --card:#fff; --ink:#1d2421; --muted:#68726d; --line:#dfe3e0;
     --accent:#2f6b4f; --accent-ink:#fff; --ok:#2f7d4f; --warn:#b7791f; --bad:#b8352b; --info:#2b6cb0;
     --ok-bg:#e4f3ea; --warn-bg:#fbf0d9; --bad-bg:#f9e1de; --info-bg:#e3eefa; --chip:#eceee9;
+    --s1:#2a78d6; --s2:#eb6834; --grid:#e6e9e6; --surface:#fff;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#161a18; --card:#1f2522; --ink:#e8ece9; --muted:#93a099; --line:#323a36;
       --accent:#5fb08a; --accent-ink:#0f1612; --ok:#6cc58f; --warn:#e0b24f; --bad:#ef7d72; --info:#7db4ee;
-      --ok-bg:#1c3326; --warn-bg:#3a3017; --bad-bg:#40201d; --info-bg:#1b2c40; --chip:#2a322e; }
+      --ok-bg:#1c3326; --warn-bg:#3a3017; --bad-bg:#40201d; --info-bg:#1b2c40; --chip:#2a322e;
+      --s1:#3987e5; --s2:#d95926; --grid:#2f3733; --surface:#1f2522; }
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
@@ -59,6 +61,19 @@
   select { font:inherit; padding:5px 8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
   input[type=number] { font:inherit; padding:5px 8px; width:70px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); }
   svg.spark { vertical-align:middle; }
+  .cardc { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:12px 0; }
+  .cardc h3 { margin:0 0 6px; font-size:15px; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:var(--ink); margin:4px 0 8px; }
+  i.sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
+  i.sw.ln { height:3px; vertical-align:3px; width:14px; border-radius:2px; }
+  .chartbox { position:relative; overflow-x:auto; }
+  .chartbox svg { width:100%; min-width:640px; height:auto; display:block; }
+  .chartbox svg text.ax { font-size:12px; fill:var(--muted); } .chartbox svg text.lab { font-size:12px; font-weight:600; paint-order:stroke; stroke:var(--surface); stroke-width:4px; stroke-linejoin:round; } .chartbox svg text.rl { font-size:13px; font-weight:650; }
+  .ctip { position:absolute; pointer-events:none; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:12px; line-height:1.5; box-shadow:0 2px 8px rgba(0,0,0,.15); white-space:nowrap; z-index:5; }
+  .ctip[hidden] { display:none; }
+  .orow { cursor:pointer; outline:none; } .orow:hover rect, .orow:focus rect { fill:var(--chip); }
+  details.ctable { margin-top:8px; } details.ctable summary { cursor:pointer; color:var(--muted); font-size:12px; }
+  a.clink { font-size:12px; color:var(--info); text-decoration:none; } a.clink:hover { text-decoration:underline; }
   #loading { padding:30px; text-align:center; color:var(--muted); }
 </style>
 </head>
@@ -82,6 +97,7 @@
   <div class="tabs" id="tabs">
     <button class="tab on" data-p="plan">Delivery plan</button>
     <button class="tab" data-p="levels">Bin levels &amp; consumption</button>
+    <button class="tab" data-p="charts">Charts</button>
     <button class="tab" data-p="recon">Batch vs delivery</button>
     <button class="tab" data-p="mis">Misdelivery check</button>
     <button class="tab" data-p="notes">Data notes</button>
@@ -89,6 +105,7 @@
   <div id="loading">Loading data…</div>
   <div class="panel on" id="p-plan"></div>
   <div class="panel" id="p-levels"></div>
+  <div class="panel" id="p-charts"></div>
   <div class="panel" id="p-recon"></div>
   <div class="panel" id="p-mis"></div>
   <div class="panel" id="p-notes"></div>
@@ -132,7 +149,7 @@ const BT_LABELS = {
   '1027012338': 'South bin', '1027015203': 'North bin',
   '77843290-330e-4755-b7af-484e714a5f9c': 'East + West bins (combined)',
 };
-const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14 };
+const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14, chartLoc: 'all', chartDays: 30 };
 let NOW = Date.now();
 let D = null;       // raw loaded data
 let M = null;       // computed model
@@ -865,6 +882,7 @@ function render() {
 
   renderPlan(inRange, R);
   renderLevels();
+  renderCharts();
   renderRecon();
   renderMis();
   renderNotes();
@@ -934,6 +952,10 @@ function trailerCard(items) {
 }
 
 /* per-bin drill-down: which bin in a barn is lowest, and how a delivery should be split */
+function shortBin(label, barn) {          // "Schaap North West Inside" -> "West Inside" inside the Schaap North row
+  const l = String(label), b = String(barn || '');
+  return b && l.toLowerCase().startsWith(b.toLowerCase()) ? (l.slice(b.length).replace(/^[\s\-–:]+/, '') || l) : l;
+}
 function binDetail(r, p) { return inboundNote(r) + binDetail0(r, p); }
 function binDetail0(r, p) {
   const lv = r.level;
@@ -945,13 +967,15 @@ function binDetail0(r, p) {
   const n = sensed.length;
   const caps = r.binCaps || [];
   const equal = caps.length >= n && caps.slice(0, n).every((c) => c === caps[0]);
-  const perCap = r.cap && (equal || n === 1) ? r.cap / n : null;
+  const ownCaps = sensed.every((b) => b.cap > 0);               // per-bin sensors report their own size
+  const perCap = ownCaps ? null : r.cap && (equal || n === 1) ? r.cap / n : null;
   const rawSum = sensed.reduce((x, b) => x + b.lbs, 0) || 1;
   const scale = lv.rolled && lv.lbs > 0 ? lv.lbs / rawSum : 1;     // bring each bin forward by the same ratio as the barn total
   const rows = sensed.map((b) => {
-    const lbl = BT_LABELS[b.label] || b.label;
-    const now = Math.min(perCap || Infinity, b.lbs * scale);
-    return { lbl, read: b.lbs, t: Date.parse(b.t), now, pct: perCap ? now / perCap * 100 : null, need: perCap ? Math.max(0, perCap * S.fillPct / 100 - now) : 0 };
+    const lbl = BT_LABELS[b.label] || shortBin(b.label, r.name);
+    const cap = ownCaps ? b.cap : perCap;
+    const now = Math.min(cap || Infinity, b.lbs * scale);
+    return { lbl, cap, read: b.lbs, t: Date.parse(b.t), now, pct: cap ? now / cap * 100 : null, need: cap ? Math.max(0, cap * S.fillPct / 100 - now) : 0 };
   });
   const order = rows.slice().sort((a, b) => (a.pct == null ? a.now : a.pct) - (b.pct == null ? b.now : b.pct));
   const first = order[0];
@@ -966,7 +990,7 @@ function binDetail0(r, p) {
       ${showSplit ? `<td class="n"><b>${b.need > 0 ? fmt(Math.round(p.lbs * b.need / needSum / 100) * 100) + ' lb' : '—'}</b></td>` : ''}</tr>`;
   }
   h += '</tbody></table>';
-  h += `<div class="small muted">${perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived (split equally, since the vendors report consumption per barn, not per bin).${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
+  h += `<div class="small muted">${ownCaps ? `${rows.every((x) => Math.abs(x.cap - rows[0].cap) < 0.05 * rows[0].cap) ? `Each bin holds about ${fmt(Math.round(rows[0].cap / 100) * 100)} lb (from the sensors). ` : `Bin sizes from the sensors: ${rows.map((x) => fmt(Math.round(x.cap / 100) * 100)).join(', ')} lb. `}` : perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived (split equally, since the vendors report consumption per barn, not per bin).${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
   return h;
 }
 function bindExpand(el) {
@@ -1025,13 +1049,176 @@ function renderLevels() {
       <td class="n">${r.daysLeft != null && !r.idle ? r.daysLeft.toFixed(1) : '—'}</td>
       <td class="n">${fmt(r.rate)}<br><span class="muted small">${esc(r.rateSrc || '')}</span></td>
       <td class="n">${c ? fmt(c.baseMean) : '—'}</td><td class="n">${c ? fmt(c.recent3) : '—'}</td>
-      <td>${c ? spark(c.spark, r.flags.some((f) => f.k === 'bad') ? 'var(--bad)' : 'var(--accent)') : ''}</td>
+      <td>${c ? spark(c.spark, r.flags.some((f) => f.k === 'bad') ? 'var(--bad)' : 'var(--accent)') : ''}<br><a href="#" class="clink" data-loc="${esc(r.loc)}">Charts ›</a></td>
       <td>${flagsHtml(r)}</td></tr>
       <tr class="bindet"${S.open[lk] ? '' : ' hidden'}><td colspan="10">${binDetail(r, null)}</td></tr>`;
   }
   el.innerHTML = h + '</tbody></table></div>' +
-    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
+    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
   bindExpand(el);
+  el.querySelectorAll('a.clink').forEach((a) => a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openChart(a.dataset.loc); });
+}
+
+/* ------------------------------------------------------------------ charts tab */
+// Delivered = mill tickets by the day the batch finished. Used = the barn's daily consumption from the bin sensors.
+// "Per bin" = barn total divided by the number of bins (vendors report consumption per barn, not per bin).
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const shortDay = (key) => MON[+key.slice(5, 7) - 1] + ' ' + (+key.slice(8, 10));
+const CHART_DAYS = [14, 30, 60];
+const CH = {};                              // chart id -> data kept for the hover layer
+
+function binCount(r) {
+  const per = r.level && r.level.bins ? r.level.bins.filter((b) => b.tandem || b.cap).length : 0;
+  return per || SENSOR_BIN_COUNT[r.loc] || r.foxBins.length || r.binCaps.length || 1;
+}
+function chartSeries(r, N) {
+  const end = addDays(M.todayKey, -1);                  // last complete day
+  const byDay = {};
+  for (const c of r.clusters) { const k = ctKey(c.stop); byDay[k] = (byDay[k] || 0) + c.lbs; }
+  const c0 = r.cons;
+  const out = [];
+  for (let i = N - 1; i >= 0; i--) {
+    const key = addDays(end, -i);
+    let use = null;
+    if (c0) { const off = Math.round((Date.parse(c0.lastComplete) - Date.parse(key)) / DAY); if (off >= 0) { const v = c0.at(off); use = v === undefined ? null : v; } }
+    out.push({ key, del: byDay[key] || 0, use });
+  }
+  return out;
+}
+function chartStats(r, N) {
+  const s = chartSeries(r, N), n = binCount(r);
+  const uses = s.filter((x) => x.use != null).map((x) => x.use);
+  const useAvg = uses.length ? mean(uses) : null;
+  const delAvg = mean(s.map((x) => x.del));
+  const perCap = r.cap && n ? r.cap / n : null;
+  return { s, n, useAvg, delAvg, usePer: useAvg == null ? null : useAvg / n, delPer: delAvg / n, perCap, days: uses.length,
+    fullBinDays: perCap && useAvg ? perCap / (useAvg / n) : null };
+}
+function niceScale(max) {
+  if (!(max > 0)) return { max: 1, step: 0.25 };
+  const raw = max / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag;
+  const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+  return { max: Math.ceil(max / step - 1e-9) * step, step };
+}
+const kfmt = (v) => v >= 10000 ? Math.round(v / 1000) + 'k' : v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v));
+function barPath(x, y0, y, w) {             // rounded data end (top), flat on the baseline
+  const h = y0 - y; if (h <= 0) return '';
+  const r = Math.min(4, w / 2, h);
+  return `M${x.toFixed(1)},${y0.toFixed(1)}V${(y + r).toFixed(1)}Q${x.toFixed(1)},${y.toFixed(1)} ${(x + r).toFixed(1)},${y.toFixed(1)}H${(x + w - r).toFixed(1)}Q${(x + w).toFixed(1)},${y.toFixed(1)} ${(x + w).toFixed(1)},${(y + r).toFixed(1)}V${y0.toFixed(1)}Z`;
+}
+
+// Bars = delivered, line = used (same unit, one axis). o: { id, div, ref:{v,label}, unit }
+function dualChart(o, days) {
+  const W = 960, H = 340, ml = 52, mr = 16, mt = 14, mb = 30, n = days.length, band = (W - ml - mr) / n;
+  const vals = days.map((d) => d.del / o.div).concat(days.map((d) => (d.use == null ? 0 : d.use / o.div)), o.ref ? [o.ref.v] : []);
+  const sc = niceScale(Math.max(...vals) * 1.04), y0 = H - mb;
+  const X = (i) => ml + band * (i + 0.5), Y = (v) => mt + (y0 - mt) * (1 - v / sc.max);
+  let g = '';
+  for (let v = 0; v <= sc.max + 1e-9; v += sc.step) {
+    g += `<line x1="${ml}" x2="${W - mr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--grid)" stroke-width="1"/><text x="${ml - 8}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end" class="ax">${kfmt(v)}</text>`;
+  }
+  const step = Math.max(1, Math.ceil(n / 9));
+  for (let i = 0; i < n; i++) if ((n - 1 - i) % step === 0) g += `<text x="${X(i).toFixed(1)}" y="${H - 9}" text-anchor="middle" class="ax">${shortDay(days[i].key)}</text>`;
+  const bw = Math.max(3, Math.min(30, band * 0.62));
+  days.forEach((d, i) => { if (d.del > 0) g += `<path d="${barPath(X(i) - bw / 2, y0, Y(d.del / o.div), bw)}" fill="var(--s1)"/>`; });
+  const useVals = days.filter((d) => d.use != null);
+  if (useVals.length) {
+    let seg = [], segs = [];
+    days.forEach((d, i) => { if (d.use == null) { if (seg.length) segs.push(seg); seg = []; } else seg.push(`${X(i).toFixed(1)},${Y(d.use / o.div).toFixed(1)}`); });
+    if (seg.length) segs.push(seg);
+    // 2px surface halo under the line keeps it readable where it crosses bars
+    for (const s of segs) g += `<polyline points="${s.join(' ')}" fill="none" stroke="var(--surface)" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${s.join(' ')}" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const avg = mean(useVals.map((d) => d.use / o.div));
+    g += `<line x1="${ml}" x2="${W - mr}" y1="${Y(avg).toFixed(1)}" y2="${Y(avg).toFixed(1)}" stroke="var(--s2)" stroke-width="1.5" stroke-dasharray="5 4" opacity=".75"/>
+      <text x="${W - mr - 4}" y="${(Y(avg) - 6).toFixed(1)}" text-anchor="end" class="lab" fill="var(--ink)">average used ${fmt(avg)} lb</text>`;
+  }
+  if (o.ref) g += `<line x1="${ml}" x2="${W - mr}" y1="${Y(o.ref.v).toFixed(1)}" y2="${Y(o.ref.v).toFixed(1)}" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="2 4"/>
+      <text x="${ml + 6}" y="${(Y(o.ref.v) - 6).toFixed(1)}" class="lab" fill="var(--muted)">${esc(o.ref.label)}</text>`;
+  g += `<line id="${o.id}-x" y1="${mt}" y2="${y0}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/><circle id="${o.id}-d" r="5" fill="var(--s2)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>`;
+  CH[o.id] = { days, o, W, ml, band, X, Y, y0, mt };
+  return `<div class="chartbox" data-chart="${o.id}"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.title)}">${g}</svg><div class="ctip" hidden></div></div>`;
+}
+function chartTable(days, div, unitNote) {
+  return `<details class="ctable"><summary>View as table</summary><div class="tw"><table><thead><tr><th>Day</th><th class="n">Delivered ${unitNote}</th><th class="n">Used ${unitNote}</th></tr></thead><tbody>${days.slice().reverse().map((d) => `<tr><td>${esc(fmtDay(d.key))}</td><td class="n">${d.del ? fmt(d.del / div) : '—'}</td><td class="n">${d.use == null ? '—' : fmt(d.use / div)}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+const legendHtml = (a, b) => `<div class="legend"><span><i class="sw" style="background:var(--s1)"></i>${esc(a)}</span><span><i class="sw ln" style="background:var(--s2)"></i>${esc(b)}</span></div>`;
+
+function barnOverview(rows, N) {
+  const stats = rows.map((r) => ({ r, st: chartStats(r, N) })).filter((x) => x.st.usePer != null || x.st.delPer > 0)
+    .sort((a, b) => (b.st.usePer || 0) - (a.st.usePer || 0));
+  if (!stats.length) return '<div class="note">No barn data to chart yet.</div>';
+  const W = 960, rowH = 46, ml = 262, mr = 90, top = 6, H = top + stats.length * rowH + 28;
+  const max = Math.max(...stats.map((x) => Math.max(x.st.usePer || 0, x.st.delPer)));
+  const sc = niceScale(max * 1.05), X = (v) => ml + (W - ml - mr) * v / sc.max;
+  let g = '';
+  for (let v = 0; v <= sc.max + 1e-9; v += sc.step) g += `<line x1="${X(v).toFixed(1)}" x2="${X(v).toFixed(1)}" y1="${top}" y2="${H - 24}" stroke="var(--grid)"/><text x="${X(v).toFixed(1)}" y="${H - 8}" text-anchor="middle" class="ax">${kfmt(v)}</text>`;
+  stats.forEach((x, i) => {
+    const y = top + i * rowH;
+    g += `<g class="orow" data-loc="${esc(x.r.loc)}" tabindex="0"><rect x="0" y="${y}" width="${W}" height="${rowH}" fill="transparent"/>
+      <text x="${ml - 12}" y="${y + 19}" text-anchor="end" class="rl" fill="var(--ink)">${esc(x.r.name)}</text>
+      <text x="${ml - 12}" y="${y + 34}" text-anchor="end" class="ax">${x.st.n} bin${x.st.n === 1 ? '' : 's'}${x.r.camera ? ' · camera' : ''}</text>`;
+    const bar = (v, yy, col, lab) => v == null ? '' : `<path d="M${ml},${yy}H${(X(v) - 4).toFixed(1)}Q${X(v).toFixed(1)},${yy} ${X(v).toFixed(1)},${yy + 4}V${yy + 8}Q${X(v).toFixed(1)},${yy + 12} ${(X(v) - 4).toFixed(1)},${yy + 12}H${ml}Z" fill="${col}"/><text x="${(X(v) + 6).toFixed(1)}" y="${yy + 10}" class="lab" fill="var(--ink)">${lab}</text>`;
+    g += x.st.usePer != null ? bar(Math.max(x.st.usePer, 0.001), y + 8, 'var(--s2)', fmt(x.st.usePer)) : `<text x="${ml + 6}" y="${y + 18}" class="lab" fill="var(--muted)">no usage feed</text>`;
+    g += bar(Math.max(x.st.delPer, 0.001), y + 24, 'var(--s1)', fmt(x.st.delPer));
+    g += '</g>';
+  });
+  const tbl = `<details class="ctable"><summary>View as table</summary><div class="tw"><table><thead><tr><th>Barn</th><th class="n">Bins</th><th class="n">Used / bin / day</th><th class="n">Delivered / bin / day</th><th class="n">Barn used / day</th><th class="n">Barn delivered / day</th></tr></thead><tbody>${stats.map((x) => `<tr><td>${esc(x.r.name)}</td><td class="n">${x.st.n}</td><td class="n">${fmt(x.st.usePer)}</td><td class="n">${fmt(x.st.delPer)}</td><td class="n">${fmt(x.st.useAvg)}</td><td class="n">${fmt(x.st.delAvg)}</td></tr>`).join('')}</tbody></table></div></details>`;
+  return `<div class="cardc"><h3>Average per bin per day, by barn <span class="muted small">last ${N} days · click a barn for its charts</span></h3>${legendHtml('Delivered per bin (mill tickets)', 'Used per bin (bin sensors)')}
+    <div class="chartbox"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Average pounds per bin per day by barn">${g}</svg></div>${tbl}</div>`;
+}
+
+function barnCharts(r, N) {
+  const st = chartStats(r, N), s = st.s;
+  const kp = (v, l, sub) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}${sub ? `<br><span class="muted">${sub}</span>` : ''}</div></div>`;
+  const cam = r.camera ? ' · infrared camera, so pounds can be off by 10–20%' : '';
+  let h = `<div class="kpis">${kp(st.useAvg == null ? '—' : fmt(st.useAvg), 'lb used per day', `last ${st.days} days with a scale reading`)}${kp(fmt(st.delAvg), 'lb delivered per day', 'mill tickets')}${kp(String(st.n), `bin${st.n === 1 ? '' : 's'}`, r.cap ? fmt(r.cap) + ' lb total' : '')}${kp(st.usePer == null ? '—' : fmt(st.usePer), 'lb used per bin per day')}${kp(fmt(st.delPer), 'lb delivered per bin per day')}${kp(st.fullBinDays ? st.fullBinDays.toFixed(1) + ' d' : '—', 'a full bin lasts', st.perCap ? 'bin ≈ ' + fmt(st.perCap) + ' lb' : '')}</div>`;
+  h += `<div class="cardc"><h3>${esc(r.name)} — delivered and used, per day <span class="muted small">whole barn${cam}</span></h3>${legendHtml('Delivered (mill tickets, day the batch finished)', 'Used (daily consumption)')}${dualChart({ id: 'c-barn', div: 1, title: r.name + ' delivered and used per day' }, s)}${chartTable(s, 1, '(lb)')}</div>`;
+  const ref = st.perCap ? { v: st.perCap, label: `one bin holds about ${fmt(st.perCap)} lb` } : null;
+  h += `<div class="cardc"><h3>${esc(r.name)} — per bin, per day <span class="muted small">barn total ÷ ${st.n} bin${st.n === 1 ? '' : 's'}</span></h3>${legendHtml('Delivered per bin', 'Used per bin')}${dualChart({ id: 'c-bin', div: st.n, ref, title: r.name + ' delivered and used per bin per day' }, s)}${chartTable(s, st.n, '(lb / bin)')}
+    <div class="small muted" style="margin-top:6px">The vendors report consumption for the whole barn, so each bin is shown as an equal share. The real weight in each bin right now is on the Bin levels tab: click the barn's row.</div></div>`;
+  return h;
+}
+
+function renderCharts() {
+  const el = document.getElementById('p-charts');
+  const rows = M.L.filter((r) => !r.idle && (r.cons || r.clusters.length)).sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }));
+  if (S.chartLoc !== 'all' && !rows.some((r) => r.loc === S.chartLoc)) S.chartLoc = 'all';
+  const N = S.chartDays;
+  let h = `<div class="bar small"><label>Barn <select id="chartBarn"><option value="all">All barns (compare)</option>${rows.map((r) => `<option value="${esc(r.loc)}"${r.loc === S.chartLoc ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+    ${CHART_DAYS.map((n) => `<button class="chip${n === N ? ' on' : ''}" data-cd="${n}">${n} days</button>`).join('')}</div>`;
+  if (S.chartLoc === 'all') h += barnOverview(rows, N);
+  else h += barnCharts(rows.find((r) => r.loc === S.chartLoc), N);
+  h += `<div class="note small muted"><b>Delivered</b> is what the mill batched for the barn, counted on the day the batch finished (the truck may drop it a day or more later). <b>Used</b> is the barn's daily consumption from its bin sensors. Over a few weeks the two should be close; a persistent gap means feed is going somewhere else, or a sensor is off. “Per bin” divides the barn total evenly across its bins.</div>`;
+  el.innerHTML = h;
+  document.getElementById('chartBarn').onchange = (e) => { S.chartLoc = e.target.value; renderCharts(); };
+  el.querySelectorAll('[data-cd]').forEach((b) => b.onclick = () => { S.chartDays = +b.dataset.cd; renderCharts(); });
+  el.querySelectorAll('.orow').forEach((g) => { const go = () => { S.chartLoc = g.dataset.loc; renderCharts(); window.scrollTo(0, 0); }; g.onclick = go; g.onkeydown = (e) => { if (e.key === 'Enter') go(); }; });
+  el.querySelectorAll('.chartbox[data-chart]').forEach(bindChartHover);
+}
+function bindChartHover(box) {
+  const c = CH[box.dataset.chart], svg = box.querySelector('svg'), tip = box.querySelector('.ctip');
+  const xl = svg.querySelector(`#${c.o.id}-x`), dot = svg.querySelector(`#${c.o.id}-d`);
+  const hide = () => { tip.hidden = true; xl.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); };
+  svg.addEventListener('mouseleave', hide);
+  svg.addEventListener('mousemove', (e) => {
+    const rect = svg.getBoundingClientRect(), vx = (e.clientX - rect.left) * c.W / rect.width;
+    const i = Math.max(0, Math.min(c.days.length - 1, Math.floor((vx - c.ml) / c.band)));
+    const d = c.days[i], x = c.X(i);
+    xl.setAttribute('x1', x); xl.setAttribute('x2', x); xl.setAttribute('visibility', 'visible');
+    if (d.use != null) { dot.setAttribute('cx', x); dot.setAttribute('cy', c.Y(d.use / c.o.div)); dot.setAttribute('visibility', 'visible'); } else dot.setAttribute('visibility', 'hidden');
+    const u = c.o.div > 1 ? ' lb / bin' : ' lb';
+    tip.innerHTML = `<b>${esc(fmtDay(d.key))}</b><br><i class="sw" style="background:var(--s1)"></i>Delivered ${d.del ? fmt(d.del / c.o.div) + u : '—'}<br><i class="sw ln" style="background:var(--s2)"></i>Used ${d.use == null ? 'no reading' : fmt(d.use / c.o.div) + u}`;
+    tip.hidden = false;
+    const bx = box.getBoundingClientRect(), px = x / c.W * rect.width;
+    tip.style.left = Math.min(Math.max(4, px + 12), bx.width - tip.offsetWidth - 4) + 'px';
+    tip.style.top = '8px';
+  });
+}
+function openChart(loc) {
+  S.chartLoc = String(loc);
+  showTab('charts');
+  renderCharts();
+  window.scrollTo(0, 0);
 }
 
 function renderRecon() {
@@ -1132,11 +1319,14 @@ function renderNotes() {
 }
 
 /* --------------------------------------------------------------------- UI */
+function showTab(p) {
+  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.p === p));
+  document.querySelectorAll('.panel').forEach((x) => x.classList.toggle('on', x.id === 'p-' + p));
+}
 function bindUI() {
   document.getElementById('tabs').addEventListener('click', (e) => {
     const b = e.target.closest('.tab'); if (!b) return;
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
-    document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('on', p.id === 'p-' + b.dataset.p));
+    showTab(b.dataset.p);
   });
   const bind = (id, key) => document.getElementById(id).addEventListener('change', (e) => { const v = parseFloat(e.target.value); if (isFinite(v)) { S[key] = v; if (D) render(); } });
   bind('setReserve', 'reserveDays'); bind('setFill', 'fillPct'); bind('setDev', 'devPct');
@@ -1177,7 +1367,7 @@ function startAuto() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) autoRefresh(); });
 }
 
-window.FeedLogistics = { S, init, bindUI, load, render, buildModel, plan, rangeKeys, ctToEpoch, ctKey, addDays,
+window.FeedLogistics = { S, showTab, openChart, init, bindUI, load, render, buildModel, plan, rangeKeys, ctToEpoch, ctKey, addDays,
   _set(d, now) { D = d; if (now) NOW = now; }, _auto: autoRefresh, _age(ms) { lastLoad = Date.now() - ms; }, _model() { return M; } };
 if (!window.__FL_NO_AUTO) init();
 })();
