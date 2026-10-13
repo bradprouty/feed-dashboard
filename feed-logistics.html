@@ -207,6 +207,8 @@ async function loadAll() {
     ap: getJson(`${API}/ap-data`),
     bins: sb('bins?select=f_bin_id,bin_name,location_i,bin_capaci,active&limit=1000'),
     locations: sb('locations?select=location_i,descriptio,active&limit=1000'),
+    groups: sb('groups?select=group_id,aux_id,location_i,head_count,active&active=eq.true&limit=500'),
+    inventory: getJson(`${API}/inventory-data?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null),   // doForms head counts; the page still works without it
     tickets: sb(`batch_history?select=ticket_num,group_id,location_i,actual_amo,start_batc,stop_batch,recipe_id&stop_batch=gte.${since}&order=stop_batch.asc&limit=10000`),
     sync: sb('_sync_status?select=synced_at&order=synced_at.desc&limit=1'),
   };
@@ -216,6 +218,58 @@ async function loadAll() {
   }));
   out.errors = errors;
   return out;
+}
+
+/* ------------------------------------------------- group inventory (doForms head counts) */
+// Sales are entered in doForms the day the pigs ship, so Current_Inventory is today's head count.
+// api/inventory-data also keeps a timestamped history of every change, which gives the head count
+// on each past day. Feed per day = (feed per head per day) x (head that day), so a sale lowers the
+// forecast at once instead of waiting for the 7-day average to catch up.
+const normS = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+const wordsOf = (s) => new Set(String(s == null ? '' : s).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+function matchInventory(d, locName) {
+  const out = { ok: false, byLoc: {}, history: [], events: 0, firstEvent: null, records: 0, unmatchedGroups: [], unmatchedRecs: [], noCount: [] };
+  const inv = d.inventory;
+  if (!inv || !Array.isArray(inv.records)) return out;
+  out.ok = true; out.records = inv.records.length;
+  out.history = (inv.history || []).map((e) => ({ t: Date.parse(e.t), changes: e.changes || {} })).filter((e) => isFinite(e.t)).sort((a, b) => a.t - b.t);
+  out.events = out.history.length; out.firstEvent = out.events ? out.history[0].t : null;
+  const groups = d.groups || [];
+  const byGid = {};
+  for (const g of groups) for (const id of [g.aux_id, g.group_id]) { const k = normS(id); if (!k) continue; const a = (byGid[k] = byGid[k] || []); if (!a.includes(g)) a.push(g); }
+  const recsByGid = {};
+  for (const r of inv.records) (recsByGid[normS(r.GroupID)] = recsByGid[normS(r.GroupID)] || []).push(r);
+  const score = (r, g) => { const a = wordsOf((r.Location || '') + ' ' + (r.Center || '')), b = wordsOf(locName[String(g.location_i)] || ''); let n = 0; for (const w of b) if (a.has(w)) n++; return n; };
+  const claimed = new Set();
+  for (const [gid, recs] of Object.entries(recsByGid)) {
+    const gs = (byGid[gid] || []).slice();
+    if (!gs.length) { out.unmatchedRecs.push(...recs.map((r) => r.GroupID + (r.Location ? ' (' + r.Location + ')' : ''))); continue; }
+    const put = (g, r, share, shared) => {
+      claimed.add(String(g.location_i));
+      if (r.Current_Inventory == null) { out.noCount.push(locName[String(g.location_i)] || g.location_i); return; }
+      out.byLoc[String(g.location_i)] = { key: r.key, rec: r, share, shared, now: r.Current_Inventory * share, fox: g };
+    };
+    if (recs.length === 1 && gs.length > 1) {                       // one record covers several FoxPro groups (Raak): split by FoxPro head count
+      const tot = gs.reduce((x, g) => x + (Number(g.head_count) || 0), 0) || gs.length;
+      for (const g of gs) put(g, recs[0], tot === gs.length ? 1 / gs.length : (Number(g.head_count) || 0) / tot, true);
+    } else {                                                        // pair records and groups by best name overlap
+      const pairs = [];
+      for (const r of recs) for (const g of gs) pairs.push({ r, g, sc: score(r, g) });
+      pairs.sort((a, b) => b.sc - a.sc);
+      const ur = new Set(), ug = new Set();
+      for (const x of pairs) { if (ur.has(x.r) || ug.has(x.g)) continue; if (recs.length > 1 && gs.length > 1 && x.sc === 0 && pairs.filter((y) => y.r === x.r).length > 1) continue; ur.add(x.r); ug.add(x.g); put(x.g, x.r, 1, false); }
+      for (const r of recs) if (!ur.has(r)) out.unmatchedRecs.push(r.GroupID + (r.Location ? ' (' + r.Location + ')' : ''));
+    }
+  }
+  for (const g of groups) if (!claimed.has(String(g.location_i))) out.unmatchedGroups.push((locName[String(g.location_i)] || 'Location ' + g.location_i) + ' [' + (g.aux_id || g.group_id) + ']');
+  return out;
+}
+// head count in a barn at time t, from the recorded changes (before the first record: assume it was the first value seen)
+function headAt(invMap, m, t) {
+  let v = null, first = null;
+  for (const e of invMap.history) { const n = e.changes[m.key]; if (n == null) continue; if (first == null) first = n; if (e.t <= t) v = n; else break; }
+  if (v == null) v = first != null ? first : m.rec.Current_Inventory;
+  return v * m.share;
 }
 
 /* ------------------------------------------------------------------- model */
@@ -276,6 +330,7 @@ function buildModel(d) {
   })]);
 
   const L = [];
+  const invMap = matchInventory(d, locName);
   const mis = misdelivery(d, clustersByLoc);
   for (const loc of [...locIds].sort((a, b) => Number(a) - Number(b))) {
     const v = vend[loc] || null;
@@ -303,6 +358,22 @@ function buildModel(d) {
       };
     }
 
+    // ---- head count (doForms) and feed per head
+    row.inv = invMap.byLoc[loc] || null;
+    if (row.inv) {
+      const m = row.inv;
+      m.headNow = m.now;
+      const headDay = (key) => headAt(invMap, m, Date.parse(key + 'T12:00:00Z'));
+      m.headDay = headDay;
+      if (row.cons) {
+        const c0 = row.cons;
+        const ph = (a, b) => { let cs = 0, hs = 0; for (let i = a; i <= b; i++) { const x = c0.at(i); if (x === undefined) continue; cs += x; hs += headDay(addDays(c0.lastComplete, -i)); } return hs > 0 ? cs / hs : null; };
+        m.ph7 = ph(0, 6); m.ph3 = ph(0, 2); m.phBase = ph(3, 16);
+        let hs = 0, n = 0; for (let i = 0; i <= 6; i++) { if (c0.at(i) === undefined) continue; hs += headDay(addDays(c0.lastComplete, -i)); n++; }
+        m.avgHead7 = n ? hs / n : null;
+      }
+    }
+
     // mill-side rate (lbs/day delivered, trailing 28 days) -- fallback rate and cross-check
     const win28 = NOW - 28 * DAY;
     const mill28 = cl.filter((c) => c.stop >= win28).reduce((x, c) => x + c.lbs, 0);
@@ -313,19 +384,44 @@ function buildModel(d) {
     let rate = null, rateSrc = null;
     if (row.cons && row.cons.rate7 != null) { rate = row.cons.rate7; rateSrc = 'scale 7-day avg'; }
     else if (row.millRate > 0) { rate = row.millRate; rateSrc = 'mill deliveries 28-day avg'; }
+    row.rateRaw = rate;
+    if (row.inv && row.inv.headNow != null) {
+      const m = row.inv;
+      if (row.cons && row.cons.rate7 != null && m.ph7 != null) { rate = m.ph7 * m.headNow; rateSrc = 'per-head rate × ' + fmt(m.headNow) + ' head'; }
+      else if (!(row.cons && row.cons.rate7 != null) && row.millRate > 0) {
+        let hs = 0; for (let i = 1; i <= 28; i++) hs += m.headDay(addDays(todayKey, -i));
+        const avg = hs / 28;
+        if (avg > 0) { rate = row.millRate * m.headNow / avg; rateSrc = 'mill 28-day avg × head change'; }
+      }
+    }
     row.rate = rate; row.rateSrc = rateSrc;
     row.idle = !!(row.cons ? (row.cons.recent3 != null && row.cons.recent3 < 300) : (cl.length ? NOW - cl[cl.length - 1].stop > 14 * DAY : true));
+    if (row.inv && row.inv.headNow === 0) { row.idle = true; row.flags.push({ k: 'mute', t: '0 head', tip: 'doForms shows no pigs in this barn, so no feed is planned for it.' }); }
     if (row.idle) row.rate = 0;
+    if (row.inv && row.inv.avgHead7 && row.cons && row.inv.headNow > 0) {
+      const ch = row.inv.headNow - row.inv.avgHead7;
+      row.inv.change = ch;
+      if (Math.abs(ch) / row.inv.avgHead7 >= 0.03) row.flags.push({ k: 'info', t: fmt(row.inv.headNow) + ' head (' + (ch > 0 ? '+' : '−') + fmt(Math.abs(ch)) + ')', tip: `${fmt(row.inv.headNow)} pigs now vs ${fmt(row.inv.avgHead7)} on average over the last 7 days (doForms inventory). The feed forecast uses the per-head rate × today's head count.` });
+    }
 
     // ---- deviation from normal
     row.dev = null;
     if (row.cons && row.cons.baseMean != null && row.cons.baseN >= 7 && row.cons.baseMean > 1500) {
-      const c = row.cons, pct = (c.recent3 / c.baseMean - 1) * 100;
-      const yZ = c.baseSd > 0 ? (c.yesterday - c.baseMean) / c.baseSd : 0;
-      row.dev = { pct, yPct: (c.yesterday / c.baseMean - 1) * 100, yZ };
-      if (c.recent3 < 300) row.flags.push({ k: 'bad', t: 'No consumption', tip: 'Scale shows ~0 lb/day for 3 days but it normally uses ' + fmt(c.baseMean) + '. Empty barn or sensor problem.' });
-      else if (Math.abs(pct) >= S.devPct) row.flags.push({ k: Math.abs(pct) >= S.devPct * 1.75 ? 'bad' : 'warn', t: (pct > 0 ? 'Eating +' : 'Eating ') + Math.round(pct) + '%', tip: `Last 3 days ${fmt(c.recent3)} lb/day vs normal ${fmt(c.baseMean)} (prior 14 days).` });
-      else if (Math.abs(row.dev.yPct) >= S.devPct * 1.5 && Math.abs(yZ) >= 2) row.flags.push({ k: 'warn', t: 'Yesterday ' + (row.dev.yPct > 0 ? '+' : '') + Math.round(row.dev.yPct) + '%', tip: `Yesterday ${fmt(c.yesterday)} lb vs normal ${fmt(c.baseMean)}.` });
+      const c = row.cons, m = row.inv;
+      let pct = (c.recent3 / c.baseMean - 1) * 100;
+      let yPct = (c.yesterday / c.baseMean - 1) * 100;
+      let yZ = c.baseSd > 0 ? (c.yesterday - c.baseMean) / c.baseSd : 0;
+      if (m && m.ph3 != null && m.phBase > 0) {          // judge eating per pig, so a sale is not flagged as a drop in eating
+        pct = (m.ph3 / m.phBase - 1) * 100;
+        const y = c.yesterday / (m.headDay(c.lastComplete) || 1);
+        yPct = (y / m.phBase - 1) * 100;
+        yZ = c.baseSd > 0 && c.baseMean > 0 ? yPct / ((c.baseSd / c.baseMean) * 100) : 0;
+      }
+      row.dev = { pct, yPct, yZ, perHead: !!(m && m.ph3 != null) };
+      if (m && m.headNow === 0) { /* empty barn: already marked 0 head */ }
+      else if (c.recent3 < 300) row.flags.push({ k: 'bad', t: 'No consumption', tip: 'Scale shows ~0 lb/day for 3 days but it normally uses ' + fmt(c.baseMean) + '. Empty barn or sensor problem.' });
+      else if (Math.abs(pct) >= S.devPct) row.flags.push({ k: Math.abs(pct) >= S.devPct * 1.75 ? 'bad' : 'warn', t: (pct > 0 ? 'Eating +' : 'Eating ') + Math.round(pct) + '%', tip: row.dev.perHead ? `Per pig, the last 3 days are ${Math.round(pct)}% vs the prior 14 days (head count taken into account).` : `Last 3 days ${fmt(c.recent3)} lb/day vs normal ${fmt(c.baseMean)} (prior 14 days).` });
+      else if (Math.abs(row.dev.yPct) >= S.devPct * 1.5 && Math.abs(yZ) >= 2) row.flags.push({ k: 'warn', t: 'Yesterday ' + (row.dev.yPct > 0 ? '+' : '') + Math.round(row.dev.yPct) + '%', tip: row.dev.perHead ? `Yesterday per pig was ${Math.round(row.dev.yPct)}% vs normal.` : `Yesterday ${fmt(c.yesterday)} lb vs normal ${fmt(c.baseMean)}.` });
     }
 
     row.lagH = estimateLag(loc, d, cl, mis);
@@ -369,7 +465,7 @@ function buildModel(d) {
   }
 
   const trailers = ROUTE_GROUPS.map((g) => trailerList(g, clustersByLoc, mis.find((m) => m.group === g), L));
-  return { todayKey, L, recon, vendorMeta, mis, trailers };
+  return { todayKey, L, recon, vendorMeta, mis, trailers, inv: invMap };
 }
 
 function currentLevel(loc, d, v, row, cl, cap) {
@@ -1024,7 +1120,7 @@ function renderPlan(items, R) {
         <td class="n">${fmt(r.level.lbs)}${r.cap ? ` <span class="muted small">/ ${fmt(r.cap)}</span>` : ''}</td>
         <td class="n">${fmt(r.rate)}</td>
         <td>${r.runOut ? fmtDay(ctKey(r.runOut)) : '—'}</td>
-        <td>${p.est ? pill('mute', 'estimated level', 'No bin level feed here. Level is estimated from mill tickets minus scale consumption.') : pill('ok', r.camera ? 'camera level' : 'measured level', (r.camera ? 'Level from an infrared camera (consistent, less exact than load cells) ' : 'Level from the bin sensor ') + ago(r.level.asOf))}${p.inb ? ' ' + pill('info', fmt(p.inb) + ' lb on the way', 'Mixed feed not yet seen in the bin. It is counted as arriving, so this delivery is on top of it.') : ''}</td></tr>
+        <td>${p.est ? pill('mute', 'estimated level', 'No bin level feed here. Level is estimated from mill tickets minus scale consumption.') : pill('ok', r.camera ? 'camera level' : 'measured level', (r.camera ? 'Level from an infrared camera (consistent, less exact than load cells) ' : 'Level from the bin sensor ') + ago(r.level.asOf))}${r.inv ? ' ' + pill('mute', fmt(r.inv.headNow) + ' head', 'Forecast = feed per pig per day × pigs in the barn now (doForms inventory). Eats/day here: ' + fmt(r.rate) + ' lb.') : ''}${p.inb ? ' ' + pill('info', fmt(p.inb) + ' lb on the way', 'Mixed feed not yet seen in the bin. It is counted as arriving, so this delivery is on top of it.') : ''}</td></tr>
         <tr class="bindet"${S.open[ek] ? '' : ' hidden'}><td colspan="7">${binDetail(r, p)}</td></tr>`;
     }
   }
@@ -1036,7 +1132,7 @@ function renderPlan(items, R) {
 function renderLevels() {
   const el = document.getElementById('p-levels');
   const rows = M.L.slice().sort((a, b) => (a.idle - b.idle) || ((a.daysLeft == null ? 99 : a.daysLeft) - (b.daysLeft == null ? 99 : b.daysLeft)));
-  let h = `<div class="tw"><table><thead><tr><th>Location</th><th>Source</th><th>Bin level</th><th class="n">Level (lb)</th><th class="n">Days left</th><th class="n">Eats / day</th><th class="n">Normal</th><th class="n">Last 3d</th><th>7-day</th><th>Flags</th></tr></thead><tbody>`;
+  let h = `<div class="tw"><table><thead><tr><th>Location</th><th>Source</th><th>Bin level</th><th class="n">Level (lb)</th><th class="n">Days left</th><th class="n">Head</th><th class="n">Eats / day</th><th class="n">Normal</th><th class="n">Last 3d</th><th>7-day</th><th>Flags</th></tr></thead><tbody>`;
   for (const r of rows) {
     const c = r.cons;
     const lv = r.level;
@@ -1047,11 +1143,12 @@ function renderLevels() {
       <td class="small">${esc(r.vendor ? VENDORS[r.vendor] : 'mill only')}${r.camera ? ' ' + pill('mute', 'camera', 'Infrared camera: consistent, but less exact than a load cell. Pounds can be off by about 10-20%.') : ''}${lv ? `<br><span class="muted">${lv.measured ? 'level ' + esc(ago(lv.asOf)) : 'level estimated'}</span>` : ''}</td>
       <td>${meter(r)}</td><td class="n">${lvTxt}</td>
       <td class="n">${r.daysLeft != null && !r.idle ? r.daysLeft.toFixed(1) : '—'}</td>
-      <td class="n">${fmt(r.rate)}<br><span class="muted small">${esc(r.rateSrc || '')}</span></td>
+      <td class="n">${r.inv ? fmt(r.inv.headNow) + (r.inv.shared ? '<span class="muted small" title="One doForms record covers both Raak barns; split by FoxPro head count"> ~</span>' : '') + (r.inv.rec.Starting_Inventory ? `<br><span class="muted small">of ${fmt(r.inv.rec.Starting_Inventory * r.inv.share)} placed</span>` : '') : '<span class="muted">—</span>'}</td>
+      <td class="n">${fmt(r.rate)}<br><span class="muted small">${esc(r.rateSrc || '')}</span>${r.inv && r.rateRaw && Math.abs(r.rate / r.rateRaw - 1) >= 0.02 ? `<br><span class="muted small" title="Rate before the head-count adjustment">was ${fmt(r.rateRaw)}</span>` : ''}</td>
       <td class="n">${c ? fmt(c.baseMean) : '—'}</td><td class="n">${c ? fmt(c.recent3) : '—'}</td>
       <td>${c ? spark(c.spark, r.flags.some((f) => f.k === 'bad') ? 'var(--bad)' : 'var(--accent)') : ''}<br><a href="#" class="clink" data-loc="${esc(r.loc)}">Charts ›</a></td>
       <td>${flagsHtml(r)}</td></tr>
-      <tr class="bindet"${S.open[lk] ? '' : ' hidden'}><td colspan="10">${binDetail(r, null)}</td></tr>`;
+      <tr class="bindet"${S.open[lk] ? '' : ' hidden'}><td colspan="11">${binDetail(r, null)}</td></tr>`;
   }
   el.innerHTML = h + '</tbody></table></div>' +
     `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
@@ -1309,6 +1406,16 @@ function renderNotes() {
   items.push(bt.levelByLocation && Object.keys(bt.levelByLocation).length ? `BarnTools: hourly bin levels are live for ${Object.keys(bt.levelByLocation).join(', ')} (${Object.values(bt.deliveryEvents || {}).reduce((x, a) => x + a.length, 0)} fills stored; each sync covers about 4 days).`
     : (bt.levelError ? 'BarnTools: level query failed: ' + bt.levelError : 'BarnTools: consumption only so far, so Schaap North and Raak levels are estimated.'));
   items.push('BarnTools bins (Schaap North, Raak North, Raak South) use infrared cameras: consistent, but less exact than BinMaster\'s load cells. Fills there are matched to tickets with a ' + (TOL_CAMERA * 100) + '% tolerance instead of ' + (TOL_LOADCELL * 100) + '%, and their levels are marked as camera estimates.');
+  {
+    const iv = M.inv;
+    if (!D.inventory) items.push('Head counts: the doForms inventory endpoint (api/inventory-data) is not deployed or not reachable, so feed forecasts do not account for sales yet.');
+    else {
+      items.push(`Head counts (doForms): ${Object.keys(iv.byLoc).length} barns matched to a doForms group. ${iv.events ? 'Sales are tracked since ' + fmtTime(iv.firstEvent) + ' (' + iv.events + ' recorded updates). Before that the head count is assumed constant.' : 'No history recorded yet; until the first inventory snapshot runs, the head count is assumed constant.'} Feed forecast = feed per pig per day (last 7 days) × pigs now. It does not predict future sales or pigs growing into higher intakes.`);
+      if (iv.unmatchedGroups.length) items.push('No doForms record found for: ' + iv.unmatchedGroups.join(', ') + '. Those barns use the plain scale rate.');
+      if (iv.noCount.length) items.push('doForms has no Current_Inventory number for: ' + iv.noCount.join(', ') + '.');
+      if (iv.unmatchedRecs.length) items.push('doForms groups with no active FoxPro barn (ignored): ' + iv.unmatchedRecs.join(', ') + '.');
+    }
+  }
   items.push('Location 12 (Schaap South), the nurseries and any location without a bin scale have no vendor data; their rate comes from mill deliveries.');
   items.push('Vendor syncs run once a day (Vercel Hobby). A level can be up to ~24 h old, so it is rolled forward using the eating rate and any mill tickets since. Mixed feed that has not yet been seen arriving in a bin is shown as "on the way" and counted as arriving (not as a delivery still to order). Schaap loads can wait up to ' + (ROUTE_GROUPS[0].maxSitH / 24) + ' days on the trailer. Barns without a sensor assume ' + ARRIVAL_LAG_H + ' h after mixing, unless their typical delay is longer.');
   items.push('Scale consumption is bucketed by UTC day (the existing sync convention), so a "day" runs 7 pm–7 pm Central.');
