@@ -239,7 +239,7 @@ function matchInventory(d, locName) {
   for (const g of groups) for (const id of [g.aux_id, g.group_id]) { const k = normS(id); if (!k) continue; const a = (byGid[k] = byGid[k] || []); if (!a.includes(g)) a.push(g); }
   const recsByGid = {};
   for (const r of inv.records) (recsByGid[normS(r.GroupID)] = recsByGid[normS(r.GroupID)] || []).push(r);
-  const score = (r, g) => { const a = wordsOf((r.Location || '') + ' ' + (r.Center || '')), b = wordsOf(locName[String(g.location_i)] || ''); let n = 0; for (const w of b) if (a.has(w)) n++; return n; };
+  const score = (r, g) => { const a = wordsOf((r.Location || '') + ' ' + (r.Center || '')), b = wordsOf(locName[String(g.location_i)] || ''); let n = 0; for (const w of b) if (a.has(w)) n++; if (normS(r.Location) && normS(r.Location) === normS(g.location_i)) n += 10; return n; };   // doForms Location can be the FoxPro location number itself (Raak: 101 / 102)
   const claimed = new Set();
   for (const [gid, recs] of Object.entries(recsByGid)) {
     const gs = (byGid[gid] || []).slice();
@@ -1405,6 +1405,23 @@ function renderNotes() {
   items.push(ap.levelByLocation ? `AP: daily bin levels are live for ${Object.keys(ap.levelByLocation).join(', ')}. Deliveries are inferred from day-over-day level change plus consumption.` : 'AP: level storage not deployed yet.');
   items.push(bt.levelByLocation && Object.keys(bt.levelByLocation).length ? `BarnTools: hourly bin levels are live for ${Object.keys(bt.levelByLocation).join(', ')} (${Object.values(bt.deliveryEvents || {}).reduce((x, a) => x + a.length, 0)} fills stored; each sync covers about 4 days).`
     : (bt.levelError ? 'BarnTools: level query failed: ' + bt.levelError : 'BarnTools: consumption only so far, so Schaap North and Raak levels are estimated.'));
+  {
+    const n = bt.binMap ? Object.keys(bt.binMap).length : 0;
+    const shown = Object.values(bt.levelByLocation || {}).reduce((x, L) => x + (L.bins || []).filter((b) => b.tandem).length, 0);
+    const bd = bt.binDiscovery || {};
+    if (!('binMap' in bt)) items.push('BarnTools individual bins: the updated barntools-sync.js has not run yet (the stored record has no binMap). Deploy it and wait for the next sync.');
+    else if (n) items.push(`BarnTools individual bins: ${n} tandem pair${n === 1 ? '' : 's'} mapped (${[...new Set(Object.values(bt.binMapHow || {}))].join(', ') || 'manual'}); ${shown} bins shown separately.${bt.binChecks ? ' Checks: ' + Object.values(bt.binChecks).join('; ') + '.' : ''}${bt.binError ? ' Error: ' + bt.binError : ''}`);
+    else {
+      const t = bd.types || {}, bn = bd.barnType;
+      items.push('BarnTools individual bins: none found yet. ' + [bt.binError && 'Error: ' + bt.binError, bd.error && 'Discovery: ' + bd.error, bd.at && 'Last tried ' + fmtTime(Date.parse(bd.at)),
+        (bd.attempts || []).length && 'Tried: ' + bd.attempts.map((a) => a.path + (a.error ? ' failed (' + a.error + ')' : ' ' + a.barns + ' barns, ' + a.matched + ' ours')).join('; '),
+        bn && Array.isArray(t[bn]) && bn + ' fields: ' + t[bn].join(', '),
+        t.Bin && Array.isArray(t.Bin) && 'Bin fields: ' + t.Bin.join(', '),
+        Object.keys(t).filter((k) => /tandem/i.test(k) && Array.isArray(t[k])).map((k) => k + ' fields: ' + t[k].join(', ')).join('. '),
+        bd.feedSeriesFields && 'feedTimeSeries returns: ' + bd.feedSeriesFields.join(', '),
+        bd.queryFields && !bd.path && 'Query fields: ' + bd.queryFields.join(', ')].filter(Boolean).join(' · '));
+    }
+  }
   items.push('BarnTools bins (Schaap North, Raak North, Raak South) use infrared cameras: consistent, but less exact than BinMaster\'s load cells. Fills there are matched to tickets with a ' + (TOL_CAMERA * 100) + '% tolerance instead of ' + (TOL_LOADCELL * 100) + '%, and their levels are marked as camera estimates.');
   {
     const iv = M.inv;
@@ -1417,7 +1434,7 @@ function renderNotes() {
     }
   }
   items.push('Location 12 (Schaap South), the nurseries and any location without a bin scale have no vendor data; their rate comes from mill deliveries.');
-  items.push('Vendor syncs run once a day (Vercel Hobby). A level can be up to ~24 h old, so it is rolled forward using the eating rate and any mill tickets since. Mixed feed that has not yet been seen arriving in a bin is shown as "on the way" and counted as arriving (not as a delivery still to order). Schaap loads can wait up to ' + (ROUTE_GROUPS[0].maxSitH / 24) + ' days on the trailer. Barns without a sensor assume ' + ARRIVAL_LAG_H + ' h after mixing, unless their typical delay is longer.');
+  items.push('BinMaster and BarnTools sync every 15 minutes (GitHub Actions); AP syncs once a day. A level can be a little old (up to ~24 h for AP), so it is rolled forward using the eating rate and any mill tickets since. Mixed feed that has not yet been seen arriving in a bin is shown as "on the way" and counted as arriving (not as a delivery still to order). Schaap loads can wait up to ' + (ROUTE_GROUPS[0].maxSitH / 24) + ' days on the trailer. Barns without a sensor assume ' + ARRIVAL_LAG_H + ' h after mixing, unless their typical delay is longer.');
   items.push('Scale consumption is bucketed by UTC day (the existing sync convention), so a "day" runs 7 pm–7 pm Central.');
   items.push('Delivery detection is a threshold rule (a rise of at least ' + fmt(DELIVERY_MIN_LBS) + ' lb with small dips allowed). If it misses real fills or invents them, the two constants at the top of api/binmaster-sync.js can be tuned.');
   const san = (M.L || []).filter((r) => r.level && r.level.measured && r.cap && r.level.raw > r.cap * 1.25).map((r) => r.name);
