@@ -274,6 +274,27 @@ function headAt(invMap, m, t) {
   return v * m.share;
 }
 
+/* ------------------------------------------------- BarnTools pound correction */
+// The camera sensors report a bin size larger than the real bin, so every pound figure is too high by the same ratio.
+// FoxPro's bin sizes are trusted, so per barn: factor = FoxPro capacity / BarnTools capacity. The stored data is not changed;
+// this builds a scaled copy used by the whole page (levels, per-bin readings, fills, daily eating).
+const BT_SCALE_MIN = 0.6, BT_SCALE_MAX = 1.4;       // outside this the sizes probably describe different bins, so no correction
+function scaleBarntools(bt, capOf, info) {
+  if (!bt || !bt.levelByLocation) return bt;
+  const out = { ...bt, levelByLocation: {}, deliveryEvents: { ...(bt.deliveryEvents || {}) }, byLocation: { ...(bt.byLocation || {}) } };
+  for (const [loc, L] of Object.entries(bt.levelByLocation)) {
+    const fop = capOf(loc), raw = Number(L.capacity) || (L.bins || []).reduce((x, b) => x + (Number(b.cap) || 0), 0);
+    const f = fop && raw ? fop / raw : null;
+    if (!f || f < BT_SCALE_MIN || f > BT_SCALE_MAX || Math.abs(f - 1) < 0.005) { if (f) info[loc] = { f, fop, raw, applied: false }; continue; }
+    info[loc] = { f, fop, raw, applied: true };
+    out.levelByLocation[loc] = { ...L, lbs: Math.round(L.lbs * f), capacity: Math.round(raw * f), bins: (L.bins || []).map((b) => ({ ...b, lbs: Math.round(b.lbs * f), cap: b.cap ? Math.round(b.cap * f) : b.cap })) };
+    if (bt.deliveryEvents && bt.deliveryEvents[loc]) out.deliveryEvents[loc] = bt.deliveryEvents[loc].map((e) => ({ ...e, lbs: Math.round(e.lbs * f) }));
+    if (bt.byLocation && bt.byLocation[loc]) out.byLocation[loc] = Object.fromEntries(Object.entries(bt.byLocation[loc]).map(([k, x]) => [k, x * f]));
+  }
+  for (const [loc, L] of Object.entries(bt.levelByLocation)) if (!out.levelByLocation[loc]) out.levelByLocation[loc] = L;
+  return out;
+}
+
 /* ------------------------------------------------------------------- model */
 function buildModel(d) {
   const todayKey = ctKey(NOW);
@@ -294,6 +315,8 @@ function buildModel(d) {
     const n = SENSOR_BIN_COUNT[k];
     return (n ? arr.slice(0, n) : arr).reduce((x, y) => x + y, 0) || null;
   };
+  const btScale = {};
+  if (d.barntools) d = { ...d, barntools: scaleBarntools(d.barntools, capOf, btScale) };
 
   // mill tickets -> truck-trip clusters per location
   const ticketsByLoc = {};
@@ -340,6 +363,8 @@ function buildModel(d) {
     const cap = capOf(loc);
     const cl = clustersByLoc[loc] || [];
     const row = { loc, name, cap, vendor: v ? v.vendor : null, clusters: cl, flags: [] };
+    row.btScale = btScale[loc] && btScale[loc].applied ? btScale[loc] : null;
+    row.btCapDiff = btScale[loc] && !btScale[loc].applied ? btScale[loc] : null;
     row.foxBins = (foxBinsByLoc[loc] || []).slice().sort((a, b) => a.name.localeCompare(b.name));
     { const sorted = (capByLoc[loc] || []).filter((x) => x > 0).sort((a, b) => b - a); const n = SENSOR_BIN_COUNT[loc]; row.binCaps = n ? sorted.slice(0, n) : sorted; }
 
@@ -992,7 +1017,7 @@ const locName = (loc) => { const r = M.L.find((x) => x.loc === String(loc)); ret
 
 function cameraNote(r) {
   if (!r.camera) return '';
-  return `<div class="small" style="margin-bottom:6px">${pill('mute', 'Camera sensor')} <span class="muted">Levels come from an infrared camera: reliable for seeing that a fill happened and when, less exact on pounds.${r.fillCal ? ` Its fills have averaged ${r.fillCal.pct > 0 ? '+' : ''}${Math.round(r.fillCal.pct)}% against the mill ticket pounds over ${r.fillCal.n} loads.` : ''} Bin-level percentages are approximate.</span></div>`;
+  return `<div class="small" style="margin-bottom:6px">${pill('mute', 'Camera sensor')} <span class="muted">Levels come from an infrared camera: reliable for seeing that a fill happened and when, less exact on pounds.${r.fillCal ? ` Its fills have averaged ${r.fillCal.pct > 0 ? '+' : ''}${Math.round(r.fillCal.pct)}% against the mill ticket pounds over ${r.fillCal.n} loads.` : ''} Bin-level percentages are approximate.</span>${r.btScale ? ` <span class="muted">BarnTools reports this barn's bins as ${fmt(r.btScale.raw)} lb but FoxPro has ${fmt(r.btScale.fop)} lb, so every BarnTools pound figure here (levels, fills, daily eating) is scaled by ${r.btScale.f.toFixed(3)}. The stored data is unchanged.</span>` : ''}</div>`;
 }
 function inboundNote(r) {
   if (!r.inbound || !r.inbound.length) return cameraNote(r);
@@ -1088,7 +1113,7 @@ function binDetail0(r, p) {
       ${showSplit ? `<td class="n"><b>${b.need > 0 ? fmt(Math.round(p.lbs * b.need / needSum / 100) * 100) + ' lb' : '—'}</b></td>` : ''}</tr>`;
   }
   h += '</tbody></table>';
-  h += `<div class="small muted">${ownCaps ? `${rows.every((x) => Math.abs(x.cap - rows[0].cap) < 0.05 * rows[0].cap) ? `Each bin holds about ${fmt(Math.round(rows[0].cap / 100) * 100)} lb (from the sensors). ` : `Bin sizes from the sensors: ${rows.map((x) => fmt(Math.round(x.cap / 100) * 100)).join(', ')} lb. `}` : perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived (split equally, since the vendors report consumption per barn, not per bin).${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
+  h += `<div class="small muted">${ownCaps ? `${rows.every((x) => Math.abs(x.cap - rows[0].cap) < 0.05 * rows[0].cap) ? `Each bin holds about ${fmt(Math.round(rows[0].cap / 100) * 100)} lb (${r.btScale ? 'FoxPro size; BarnTools pounds scaled to match' : 'from the sensors'}). ` : `Bin sizes from the sensors: ${rows.map((x) => fmt(Math.round(x.cap / 100) * 100)).join(', ')} lb. `}` : perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived (split equally, since the vendors report consumption per barn, not per bin).${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
   return h;
 }
 function bindExpand(el) {
@@ -1423,6 +1448,11 @@ function renderNotes() {
   items.push(ap.levelByLocation ? `AP: daily bin levels are live for ${Object.keys(ap.levelByLocation).join(', ')}. Deliveries are inferred from day-over-day level change plus consumption.` : 'AP: level storage not deployed yet.');
   items.push(bt.levelByLocation && Object.keys(bt.levelByLocation).length ? `BarnTools: hourly bin levels are live for ${Object.keys(bt.levelByLocation).join(', ')} (${Object.values(bt.deliveryEvents || {}).reduce((x, a) => x + a.length, 0)} fills stored; each sync covers about 4 days).`
     : (bt.levelError ? 'BarnTools: level query failed: ' + bt.levelError : 'BarnTools: consumption only so far, so Schaap North and Raak levels are estimated.'));
+  if (M && M.L) {
+    const sc = M.L.filter((r) => r.btScale), nd = M.L.filter((r) => r.btCapDiff);
+    if (sc.length) items.push('BarnTools pound correction: BarnTools bin sizes run larger than the real bins, so its pounds are scaled to the FoxPro capacity (levels, per-bin readings, fills and daily eating; stored data unchanged). ' + sc.map((r) => `${r.name} ×${r.btScale.f.toFixed(3)} (BarnTools ${fmt(r.btScale.raw)} lb → FoxPro ${fmt(r.btScale.fop)} lb)`).join('; ') + '.');
+    if (nd.length) items.push('BarnTools pound correction skipped (sizes too different to be the same bins): ' + nd.map((r) => `${r.name} (BarnTools ${fmt(r.btCapDiff.raw)} vs FoxPro ${fmt(r.btCapDiff.fop)})`).join('; ') + '.');
+  }
   {
     const n = bt.binMap ? Object.keys(bt.binMap).length : 0;
     const shown = Object.values(bt.levelByLocation || {}).reduce((x, L) => x + (L.bins || []).filter((b) => b.tandem).length, 0);
