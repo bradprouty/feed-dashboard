@@ -63,6 +63,8 @@
   svg.spark { vertical-align:middle; }
   .cardc { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:12px 0; }
   .cardc h3 { margin:0 0 6px; font-size:15px; }
+  .seg { display:inline-flex; gap:4px; margin:0 6px; }
+  .panelh { font-size:13px; font-weight:600; margin:10px 0 2px; }
   .legend { display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:var(--ink); margin:4px 0 8px; }
   i.sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
   i.sw.ln { height:3px; vertical-align:3px; width:14px; border-radius:2px; }
@@ -149,7 +151,7 @@ const BT_LABELS = {
   '1027012338': 'South bin', '1027015203': 'North bin',
   '77843290-330e-4755-b7af-484e714a5f9c': 'East + West bins (combined)',
 };
-const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14, chartLoc: 'all', chartDays: 30 };
+const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14, chartLoc: 'each', chartDays: 30, chartMode: 'combined' };
 let NOW = Date.now();
 let D = null;       // raw loaded data
 let M = null;       // computed model
@@ -1206,7 +1208,7 @@ function barPath(x, y0, y, w) {             // rounded data end (top), flat on t
 
 // Bars = delivered, line = used (same unit, one axis). o: { id, div, ref:{v,label}, unit }
 function dualChart(o, days) {
-  const W = 960, H = 340, ml = 52, mr = 16, mt = 14, mb = 30, n = days.length, band = (W - ml - mr) / n;
+  const W = 960, H = o.H || 340, ml = 52, mr = 16, mt = 14, mb = 30, n = days.length, band = (W - ml - mr) / n;
   const vals = days.map((d) => d.del / o.div).concat(days.map((d) => (d.use == null ? 0 : d.use / o.div)), o.ref ? [o.ref.v] : []);
   const sc = niceScale(Math.max(...vals) * 1.04), y0 = H - mb;
   const X = (i) => ml + band * (i + 0.5), Y = (v) => mt + (y0 - mt) * (1 - v / sc.max);
@@ -1264,31 +1266,47 @@ function barnOverview(rows, N) {
     <div class="chartbox"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Average pounds per bin per day by barn">${g}</svg></div>${tbl}</div>`;
 }
 
-function barnCharts(r, N) {
-  const st = chartStats(r, N), s = st.s;
-  const kp = (v, l, sub) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}${sub ? `<br><span class="muted">${sub}</span>` : ''}</div></div>`;
-  const cam = r.camera ? ' · infrared camera, so pounds can be off by 10–20%' : '';
-  let h = `<div class="kpis">${kp(st.useAvg == null ? '—' : fmt(st.useAvg), 'lb used per day', `last ${st.days} days with a scale reading`)}${kp(fmt(st.delAvg), 'lb delivered per day', 'mill tickets')}${kp(String(st.n), `bin${st.n === 1 ? '' : 's'}`, r.cap ? fmt(r.cap) + ' lb total' : '')}${kp(st.usePer == null ? '—' : fmt(st.usePer), 'lb used per bin per day')}${kp(fmt(st.delPer), 'lb delivered per bin per day')}${kp(st.fullBinDays ? st.fullBinDays.toFixed(1) + ' d' : '—', 'a full bin lasts', st.perCap ? 'bin ≈ ' + fmt(st.perCap) + ' lb' : '')}</div>`;
-  h += `<div class="cardc"><h3>${esc(r.name)} — delivered and used, per day <span class="muted small">whole barn${cam}</span></h3>${legendHtml('Delivered (mill tickets, day the batch finished)', 'Used (daily consumption)')}${dualChart({ id: 'c-barn', div: 1, title: r.name + ' delivered and used per day' }, s)}${chartTable(s, 1, '(lb)')}</div>`;
+// One chart card per barn. mode: 'combined' (whole barn), 'bins' (per bin) or 'both' (the two stacked, each on its own scale so the
+// per-bin numbers are not flattened). Per bin = barn total / number of bins: the vendors report consumption for the barn, not per bin.
+const CHART_MODES = [['combined', 'Combined'], ['bins', 'Individual bins'], ['both', 'Both']];
+function barnChartCard(r, N, mode, compact) {
+  const st = chartStats(r, N), s = st.s, id = 'c' + String(r.loc).replace(/[^a-z0-9]/gi, '');
+  const cam = r.camera ? ' · infrared camera, pounds can be off by 10–20%' : '';
+  const two = mode === 'both', H = compact ? (two ? 230 : 280) : (two ? 270 : 340);
   const ref = st.perCap ? { v: st.perCap, label: `one bin holds about ${fmt(st.perCap)} lb` } : null;
-  h += `<div class="cardc"><h3>${esc(r.name)} — per bin, per day <span class="muted small">barn total ÷ ${st.n} bin${st.n === 1 ? '' : 's'}</span></h3>${legendHtml('Delivered per bin', 'Used per bin')}${dualChart({ id: 'c-bin', div: st.n, ref, title: r.name + ' delivered and used per bin per day' }, s)}${chartTable(s, st.n, '(lb / bin)')}
-    <div class="small muted" style="margin-top:6px">The vendors report consumption for the whole barn, so each bin is shown as an equal share. The real weight in each bin right now is on the Bin levels tab: click the barn's row.</div></div>`;
-  return h;
+  const sub = `${st.useAvg == null ? 'no usage feed' : fmt(st.useAvg) + ' lb used/day'} · ${fmt(st.delAvg)} lb delivered/day · ${st.n} bin${st.n === 1 ? '' : 's'}${st.usePer != null ? ` (${fmt(st.usePer)} lb used per bin/day)` : ''}${cam}`;
+  const panel = (kind) => kind === 'combined'
+    ? `${two ? `<div class="panelh">Whole barn <span class="muted small">lb per day</span></div>` : ''}${dualChart({ id: id + '-b', H, div: 1, title: r.name + ' delivered and used per day' }, s)}`
+    : `${two ? `<div class="panelh">Each bin <span class="muted small">barn total ÷ ${st.n} bin${st.n === 1 ? '' : 's'}, lb per bin per day</span></div>` : ''}${dualChart({ id: id + '-p', H, div: st.n, ref, title: r.name + ' delivered and used per bin per day' }, s)}`;
+  const body = (mode === 'bins' ? panel('bins') : mode === 'both' ? panel('combined') + panel('bins') : panel('combined'));
+  const tbl = `<details class="ctable"><summary>View as table</summary><div class="tw"><table><thead><tr><th>Day</th><th class="n">Delivered (barn)</th><th class="n">Used (barn)</th>${st.n > 1 ? '<th class="n">Delivered / bin</th><th class="n">Used / bin</th>' : ''}</tr></thead><tbody>${s.slice().reverse().map((d) => `<tr><td>${esc(fmtDay(d.key))}</td><td class="n">${d.del ? fmt(d.del) : '—'}</td><td class="n">${d.use == null ? '—' : fmt(d.use)}</td>${st.n > 1 ? `<td class="n">${d.del ? fmt(d.del / st.n) : '—'}</td><td class="n">${d.use == null ? '—' : fmt(d.use / st.n)}</td>` : ''}</tr>`).join('')}</tbody></table></div></details>`;
+  const note = mode !== 'combined' && st.n > 1 ? `<div class="small muted" style="margin-top:6px">Each bin is shown as an equal share of the barn. The weight in each bin right now is on the Bin levels tab (click the barn's row).</div>` : '';
+  return `<div class="cardc"><h3>${esc(r.name)} <span class="muted small">${esc(sub)}</span></h3>${legendHtml('Delivered (mill tickets, day the batch finished)', 'Used (daily consumption)')}${body}${tbl}${note}</div>`;
+}
+function barnCharts(r, N, mode) {
+  const st = chartStats(r, N);
+  const kp = (v, l, sub) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}${sub ? `<br><span class="muted">${sub}</span>` : ''}</div></div>`;
+  const kpis = `<div class="kpis">${kp(st.useAvg == null ? '—' : fmt(st.useAvg), 'lb used per day', `last ${st.days} days with a scale reading`)}${kp(fmt(st.delAvg), 'lb delivered per day', 'mill tickets')}${kp(String(st.n), `bin${st.n === 1 ? '' : 's'}`, r.cap ? fmt(r.cap) + ' lb total' : '')}${kp(st.usePer == null ? '—' : fmt(st.usePer), 'lb used per bin per day')}${kp(fmt(st.delPer), 'lb delivered per bin per day')}${kp(st.fullBinDays ? st.fullBinDays.toFixed(1) + ' d' : '—', 'a full bin lasts', st.perCap ? 'bin ≈ ' + fmt(st.perCap) + ' lb' : '')}</div>`;
+  return kpis + barnChartCard(r, N, mode, false);
 }
 
 function renderCharts() {
   const el = document.getElementById('p-charts');
   const rows = M.L.filter((r) => !r.idle && (r.cons || r.clusters.length)).sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }));
-  if (S.chartLoc !== 'all' && !rows.some((r) => r.loc === S.chartLoc)) S.chartLoc = 'all';
-  const N = S.chartDays;
-  let h = `<div class="bar small"><label>Barn <select id="chartBarn"><option value="all">All barns (compare)</option>${rows.map((r) => `<option value="${esc(r.loc)}"${r.loc === S.chartLoc ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+  if (!['all', 'each'].includes(S.chartLoc) && !rows.some((r) => r.loc === S.chartLoc)) S.chartLoc = 'each';
+  const N = S.chartDays, mode = S.chartMode;
+  const cmp = S.chartLoc === 'all';
+  let h = `<div class="bar small"><label>Barn <select id="chartBarn"><option value="each"${S.chartLoc === 'each' ? ' selected' : ''}>Every barn (one chart each)</option><option value="all"${cmp ? ' selected' : ''}>Compare barns (averages)</option>${rows.map((r) => `<option value="${esc(r.loc)}"${r.loc === S.chartLoc ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+    ${cmp ? '' : `<span class="seg" role="group" aria-label="Show">${CHART_MODES.map(([k, l]) => `<button class="chip${k === mode ? ' on' : ''}" data-cm="${k}">${l}</button>`).join('')}</span>`}
     ${CHART_DAYS.map((n) => `<button class="chip${n === N ? ' on' : ''}" data-cd="${n}">${n} days</button>`).join('')}</div>`;
-  if (S.chartLoc === 'all') h += barnOverview(rows, N);
-  else h += barnCharts(rows.find((r) => r.loc === S.chartLoc), N);
-  h += `<div class="note small muted"><b>Delivered</b> is what the mill batched for the barn, counted on the day the batch finished (the truck may drop it a day or more later). <b>Used</b> is the barn's daily consumption from its bin sensors. Over a few weeks the two should be close; a persistent gap means feed is going somewhere else, or a sensor is off. “Per bin” divides the barn total evenly across its bins.</div>`;
+  if (cmp) h += barnOverview(rows, N);
+  else if (S.chartLoc === 'each') h += rows.map((r) => barnChartCard(r, N, mode, true)).join('') || '<div class="note">No barn data to chart yet.</div>';
+  else h += barnCharts(rows.find((r) => r.loc === S.chartLoc), N, mode);
+  h += `<div class="note small muted"><b>Delivered</b> is what the mill batched for the barn, counted on the day the batch finished (the truck may drop it a day or more later). <b>Used</b> is the barn's daily consumption from its bin sensors. Over a few weeks the two should be close; a persistent gap means feed is going somewhere else, or a sensor is off. <b>Individual bins</b> divides the barn total evenly across its bins, because the vendors report consumption for the whole barn. <b>Both</b> stacks the two, each on its own scale.</div>`;
   el.innerHTML = h;
   document.getElementById('chartBarn').onchange = (e) => { S.chartLoc = e.target.value; renderCharts(); };
   el.querySelectorAll('[data-cd]').forEach((b) => b.onclick = () => { S.chartDays = +b.dataset.cd; renderCharts(); });
+  el.querySelectorAll('[data-cm]').forEach((b) => b.onclick = () => { S.chartMode = b.dataset.cm; renderCharts(); });
   el.querySelectorAll('.orow').forEach((g) => { const go = () => { S.chartLoc = g.dataset.loc; renderCharts(); window.scrollTo(0, 0); }; g.onclick = go; g.onkeydown = (e) => { if (e.key === 'Enter') go(); }; });
   el.querySelectorAll('.chartbox[data-chart]').forEach(bindChartHover);
 }
