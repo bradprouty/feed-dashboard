@@ -1171,14 +1171,14 @@ function renderLevels() {
       <td>${meter(r)}</td><td class="n">${lvTxt}</td>
       <td class="n">${r.daysLeft != null && !r.idle ? r.daysLeft.toFixed(1) : '—'}</td>
       <td class="n">${r.inv ? fmt(r.inv.headNow) + (r.inv.shared ? '<span class="muted small" title="One doForms record covers both Raak barns; split by FoxPro head count"> ~</span>' : '') + (r.inv.rec.Starting_Inventory ? `<br><span class="muted small">of ${fmt(r.inv.rec.Starting_Inventory * r.inv.share)} placed</span>` : '') : '<span class="muted">—</span>'}</td>
-      <td class="n">${fmt(r.rate)}<br><span class="muted small">${esc(r.rateSrc || '')}</span>${r.inv && r.rateRaw && Math.abs(r.rate / r.rateRaw - 1) >= 0.02 ? `<br><span class="muted small" title="Rate before the head-count adjustment">was ${fmt(r.rateRaw)}</span>` : ''}</td>
-      <td class="n">${c ? fmt(c.baseMean) : '—'}</td><td class="n">${c ? fmt(c.recent3) : '—'}</td>
+      <td class="n">${fmt(r.rate)}${r.inv && r.inv.headNow > 0 && r.rate > 0 ? `<br><b class="small" title="Eats / day divided by head in the barn now (doForms)">${(r.rate / r.inv.headNow).toFixed(2)} lb/head</b>` : ''}<br><span class="muted small">${esc(r.rateSrc || '')}</span>${r.inv && r.rateRaw && Math.abs(r.rate / r.rateRaw - 1) >= 0.02 ? `<br><span class="muted small" title="Rate before the head-count adjustment">was ${fmt(r.rateRaw)}</span>` : ''}</td>
+      <td class="n">${c ? fmt(c.baseMean) : '—'}${r.inv && r.inv.phBase != null ? `<br><span class="muted small">${r.inv.phBase.toFixed(2)} lb/head</span>` : ''}</td><td class="n">${c ? fmt(c.recent3) : '—'}${r.inv && r.inv.ph3 != null ? `<br><span class="muted small">${r.inv.ph3.toFixed(2)} lb/head</span>` : ''}</td>
       <td>${c ? spark(c.spark, r.flags.some((f) => f.k === 'bad') ? 'var(--bad)' : 'var(--accent)') : ''}<br><a href="#" class="clink" data-loc="${esc(r.loc)}">Charts ›</a></td>
       <td>${flagsHtml(r)}</td></tr>
       <tr class="bindet"${S.open[lk] ? '' : ' hidden'}><td colspan="11">${binDetail(r, null)}</td></tr>`;
   }
   el.innerHTML = h + '</tbody></table></div>' +
-    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
+    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. The <b>lb/head</b> line is that rate divided by the doForms head count (Normal and Last 3d show their own per-head figures). A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
   bindExpand(el);
   el.querySelectorAll('a.clink').forEach((a) => a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openChart(a.dataset.loc); });
 }
