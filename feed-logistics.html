@@ -40,6 +40,7 @@
   th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:middle; }
   th { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); background:var(--chip); white-space:nowrap; }
   td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  th.sortable { cursor:pointer; user-select:none; } th.sortable:hover, th.sorted { color:var(--ink); } th .sa { display:inline-block; min-width:10px; margin-left:3px; font-size:9px; }
   tr:last-child td { border-bottom:0; }
   .tw { overflow-x:auto; border-radius:10px; }
   .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
@@ -151,7 +152,7 @@ const BT_LABELS = {
   '1027012338': 'South bin', '1027015203': 'North bin',
   '77843290-330e-4755-b7af-484e714a5f9c': 'East + West bins (combined)',
 };
-const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14, chartLoc: 'each', chartDays: 30, chartMode: 'combined' };
+const S = { open: {}, reserveDays: 1, fillPct: 95, devPct: 20, range: 'today', recon: 14, chartLoc: 'each', chartDays: 30, chartMode: 'combined', sort: { levels: null, plan: null, recon: null } };
 let NOW = Date.now();
 let D = null;       // raw loaded data
 let M = null;       // computed model
@@ -1124,6 +1125,35 @@ function bindExpand(el) {
   });
 }
 
+/* ------------------------------------------------------------ sortable columns */
+// Click a column heading to sort by it (ascending), again for descending, a third time to go back to the default order.
+function sortTh(tab, k, label, cls) {
+  const s = S.sort[tab], on = !!(s && s.k === k);
+  return `<th class="${cls || ''} sortable${on ? ' sorted' : ''}" data-sort="${tab}:${k}" title="Click to sort">${label}<span class="sa">${on ? (s.dir > 0 ? '▲' : '▼') : ''}</span></th>`;
+}
+function sortRows(tab, rows, keys, dflt) {
+  const s = S.sort[tab];
+  if (!s || !keys[s.k]) return dflt ? dflt(rows) : rows.slice();
+  const f = keys[s.k], bad = (v) => v == null || (typeof v === 'number' && !isFinite(v));
+  return rows.slice().sort((a, b) => {
+    const x = f(a), y = f(b);
+    if (bad(x) && bad(y)) return 0;
+    if (bad(x)) return 1;                          // blanks always last
+    if (bad(y)) return -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * s.dir;
+  });
+}
+function bindSort(el, tab) {
+  el.querySelectorAll('th[data-sort]').forEach((th) => th.onclick = () => {
+    const k = th.dataset.sort.split(':')[1], s = S.sort[tab];
+    S.sort[tab] = (!s || s.k !== k) ? { k, dir: 1 } : s.dir === 1 ? { k, dir: -1 } : null;
+    render();
+  });
+}
+const FLAG_W = { bad: 100, warn: 10, info: 1, mute: 0 };
+const flagScore = (r) => r.flags.reduce((x, f) => x + (FLAG_W[f.k] || 0), 0);
+const REC_RANK = { bad: 0, warn: 1, info: 2, ok: 3, mute: 4 };
+
 function renderPlan(items, R) {
   const el = document.getElementById('p-plan');
   const label = R[S.range][2];
@@ -1135,14 +1165,19 @@ function renderPlan(items, R) {
   }
   const byDay = {};
   for (const p of items) (byDay[p.key] = byDay[p.key] || []).push(p);
-  let h = `<div class="tw"><table><thead><tr><th>Location</th><th class="n">Deliver</th><th class="n">Trucks</th><th class="n">Level now</th><th class="n">Eats / day</th><th>Runs out</th><th>Basis</th></tr></thead><tbody>`;
-  for (const key of Object.keys(byDay).sort()) {
-    const g = byDay[key];
-    h += `<tr class="daygrp"><td colspan="7">${fmtDay(key)}${key === M.todayKey ? ' (today)' : ''} — ${loadsTxt(countLoads(g))}, ${fmt(g.reduce((x, p) => x + p.lbs, 0))} lb</td></tr>`;
-    for (const p of g.sort((a, b) => b.urgent - a.urgent || b.lbs - a.lbs)) {
+  const rowOf = (p) => M.L.find((x) => x.loc === p.loc);
+  const PK = { loc: (p) => p.name, lbs: (p) => p.lbs, trucks: (p) => (p.trailer ? 0.5 : p.trucks), lvl: (p) => rowOf(p).level.lbs, rate: (p) => rowOf(p).rate,
+    out: (p) => rowOf(p).runOut, basis: (p) => (p.est ? 1 : 0) };
+  const T = (k, l, c) => sortTh('plan', k, l, c);
+  const sorted = !!S.sort.plan;                       // when sorted, the day groups are dropped and the list is flat
+  let h = `<div class="tw"><table><thead><tr>${T('loc', 'Location')}${T('lbs', 'Deliver', 'n')}${T('trucks', 'Trucks', 'n')}${T('lvl', 'Level now', 'n')}${T('rate', 'Eats / day', 'n')}${T('out', 'Runs out')}${T('basis', 'Basis')}</tr></thead><tbody>`;
+  const groups = sorted ? [['', sortRows('plan', items, PK)]] : Object.keys(byDay).sort().map((k) => [k, byDay[k]]);
+  for (const [key, g] of groups) {
+    if (!sorted) h += `<tr class="daygrp"><td colspan="7">${fmtDay(key)}${key === M.todayKey ? ' (today)' : ''} — ${loadsTxt(countLoads(g))}, ${fmt(g.reduce((x, p) => x + p.lbs, 0))} lb</td></tr>`;
+    for (const p of (sorted ? g : g.sort((a, b) => b.urgent - a.urgent || b.lbs - a.lbs))) {
       const r = M.L.find((x) => x.loc === p.loc);
       const ek = `p:${p.loc}:${p.key}`;
-      h += `<tr class="expand${S.open[ek] ? ' open' : ''}" data-k="${ek}" title="Click to see the bins"><td><span class="car">▸</span><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}${p.topUp ? ' ' + pill('mute', 'rides along', 'Not due yet. It takes the other half of the trailer so the trailer goes out full.') : ''}</td>
+      h += `<tr class="expand${S.open[ek] ? ' open' : ''}" data-k="${ek}" title="Click to see the bins"><td><span class="car">▸</span><b>${esc(p.name)}</b> <span class="muted small">#${esc(p.loc)}</span>${sorted ? ` <span class="muted small">· ${esc(fmtDay(p.key))}</span>` : ''}${p.urgent ? ' ' + pill('bad', 'Urgent', 'Projected to be below the reserve already') : ''}${p.topUp ? ' ' + pill('mute', 'rides along', 'Not due yet. It takes the other half of the trailer so the trailer goes out full.') : ''}</td>
         <td class="n">${fmt(p.lbs)} lb</td><td class="n">${p.trailer ? '½ trailer' : p.trucks}</td>
         <td class="n">${fmt(r.level.lbs)}${r.cap ? ` <span class="muted small">/ ${fmt(r.cap)}</span>` : ''}</td>
         <td class="n">${fmt(r.rate)}</td>
@@ -1153,13 +1188,21 @@ function renderPlan(items, R) {
   }
   el.innerHTML = pre + h + '</tbody></table></div>' +
     `<div class="note small muted">Click a row to see each bin in that barn and which one to fill first. Method: each bin's level is rolled forward at its recent eating rate. A delivery is scheduled on the day the bin would drop below ${S.reserveDays} day${S.reserveDays === 1 ? '' : 's'} of feed, sized to refill toward ${S.fillPct}% of capacity in whole ${fmt(TRUCK_LBS)} lb truckloads. Schaap barns are planned in pairs: one ${fmt(ROUTE_GROUPS[0].trailerLbs)} lb trailer carries ${fmt(ROUTE_GROUPS[0].loadLbs)} lb to each barn of the pair, and the other barn rides along if a whole load fits. Change the reserve and fill settings at the top.</div>`;
-  bindExpand(el);
+  bindExpand(el); bindSort(el, 'plan');
 }
 
 function renderLevels() {
   const el = document.getElementById('p-levels');
-  const rows = M.L.slice().sort((a, b) => (a.idle - b.idle) || ((a.daysLeft == null ? 99 : a.daysLeft) - (b.daysLeft == null ? 99 : b.daysLeft)));
-  let h = `<div class="tw"><table><thead><tr><th>Location</th><th>Source</th><th>Bin level</th><th class="n">Level (lb)</th><th class="n">Days left</th><th class="n">Head</th><th class="n">Eats / day</th><th class="n">Normal</th><th class="n">Last 3d</th><th>7-day</th><th>Flags</th></tr></thead><tbody>`;
+  const LK = {
+    loc: (r) => r.name, src: (r) => (r.vendor ? VENDORS[r.vendor] : 'zz mill only'),
+    pct: (r) => (r.level && r.cap ? r.level.lbs / r.cap : null), lvl: (r) => (r.level ? r.level.lbs : null),
+    days: (r) => (r.idle ? null : r.daysLeft), head: (r) => (r.inv ? r.inv.headNow : null), rate: (r) => r.rate,
+    normal: (r) => (r.cons ? r.cons.baseMean : null), last3: (r) => (r.cons ? r.cons.recent3 : null),
+    trend: (r) => (r.cons && r.cons.baseMean > 0 ? r.cons.recent3 / r.cons.baseMean : null), flags: flagScore,
+  };
+  const rows = sortRows('levels', M.L, LK, (a) => a.slice().sort((x, y) => (x.idle - y.idle) || ((x.daysLeft == null ? 99 : x.daysLeft) - (y.daysLeft == null ? 99 : y.daysLeft))));
+  const T = (k, l, c) => sortTh('levels', k, l, c);
+  let h = `<div class="tw"><table><thead><tr>${T('loc', 'Location')}${T('src', 'Source')}${T('pct', 'Bin level')}${T('lvl', 'Level (lb)', 'n')}${T('days', 'Days left', 'n')}${T('head', 'Head', 'n')}${T('rate', 'Eats / day', 'n')}${T('normal', 'Normal', 'n')}${T('last3', 'Last 3d', 'n')}${T('trend', '7-day')}${T('flags', 'Flags')}</tr></thead><tbody>`;
   for (const r of rows) {
     const c = r.cons;
     const lv = r.level;
@@ -1179,7 +1222,7 @@ function renderLevels() {
   }
   el.innerHTML = h + '</tbody></table></div>' +
     `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. The <b>lb/head</b> line is that rate divided by the doForms head count (Normal and Last 3d show their own per-head figures). A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
-  bindExpand(el);
+  bindExpand(el); bindSort(el, 'levels');
   el.querySelectorAll('a.clink').forEach((a) => a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openChart(a.dataset.loc); });
 }
 
@@ -1372,8 +1415,11 @@ function renderRecon() {
   const shown = S.onlyBad ? bad : rows;
   if (!shown.length) h += `<div class="note">Nothing to show.</div>`;
   else {
-    h += `<div class="tw"><table><thead><tr><th>Batch finished</th><th>Location</th><th>Tickets</th><th class="n">Mill batched</th><th class="n">Bin gained</th><th class="n">Difference</th><th>Result</th></tr></thead><tbody>`;
-    for (const x of shown) {
+    const RK = { stop: (x) => x.stop, loc: (x) => x.name, tix: (x) => (x.tickets.length ? String(x.tickets[0]) : null), mill: (x) => x.mill || null, det: (x) => x.detected,
+      diff: (x) => x.diff, res: (x) => (REC_RANK[x.sev] == null ? 9 : REC_RANK[x.sev]) };
+    const T = (k, l, c) => sortTh('recon', k, l, c);
+    h += `<div class="tw"><table><thead><tr>${T('stop', 'Batch finished')}${T('loc', 'Location')}${T('tix', 'Tickets')}${T('mill', 'Mill batched', 'n')}${T('det', 'Bin gained', 'n')}${T('diff', 'Difference', 'n')}${T('res', 'Result')}</tr></thead><tbody>`;
+    for (const x of sortRows('recon', shown, RK)) {
       h += `<tr><td>${esc(fmtTime(x.stop))}</td><td><b>${esc(x.name)}</b> <span class="muted small">#${esc(x.loc)}</span></td>
         <td class="small">${x.tickets.length ? esc(x.tickets.join(', ')) : '—'}</td>
         <td class="n">${x.mill ? fmt(x.mill) : '—'}</td><td class="n">${x.detected == null ? '—' : fmt(x.detected)}</td>
@@ -1384,6 +1430,7 @@ function renderRecon() {
   }
   h += `<div class="note small muted">A batch is matched to the bin fill(s) detected from the level sensor in the ${MATCH_AFTER_H} hours after it finishes (feed often reaches the bin the next day). Tickets for the same location less than ${CLUSTER_GAP_H} hours apart count as one truck trip. A difference over 10% (minimum 1,200 lb) is flagged. "No level feed" means that location has no sensor level data yet, so only the 28-day shipped-vs-eaten check applies.</div>`;
   el.innerHTML = h;
+  bindSort(el, 'recon');
   document.getElementById('reconSel').onchange = (e) => { S.recon = +e.target.value; render(); };
   document.getElementById('reconBad').onchange = (e) => { S.onlyBad = e.target.checked; render(); };
 }
