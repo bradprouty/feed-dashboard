@@ -170,25 +170,41 @@ const API = '/api/treatments';
 const FORMS = { group: 'Group Treatments', individual: 'Individual Treatments' };
 const ROLES = [
   { id: 'date', label: 'Date' }, { id: 'barn', label: 'Barn' }, { id: 'group', label: 'Group' },
-  { id: 'treatment', label: 'Treatment' }, { id: 'animal', label: 'Animal / tag' },
-  { id: 'qty', label: 'Head / qty' }, { id: 'by', label: 'Entered by' },
-  { id: 'lines', label: 'Table (1 row per line)' },
+  { id: 'treatment', label: 'Treatment' }, { id: 'type', label: 'Type' }, { id: 'category', label: 'FDA category' },
+  { id: 'animal', label: 'Animal / tag' }, { id: 'head', label: 'Head treated' },
+  { id: 'qty', label: 'Qty used' }, { id: 'unit', label: 'Qty unit' }, { id: 'cost', label: 'Cost' },
+  { id: 'by', label: 'Entered by' }, { id: 'lines', label: 'Table (1 row per line)' },
 ];
+// Field names confirmed from real doForms records. These win over automatic guessing.
+const KNOWN = {
+  group: {
+    date: 'G_Treat_Date', barn: 'Barn_Name', group: 'G_Treat_Group_ID', treatment: 'Treat_Name',
+    type: 'Type', category: 'FDA_Category', animal: '', head: 'Group_Number_Head',
+    qty: 'Treat_G_Qty', unit: 'Application_Unit', cost: 'Total_Treatment_Cost', by: '_enteredBy', lines: '',
+  },
+  individual: {},
+};
 const DETECT = {
   date: [/treat.*date|date.*treat/i, /^date$/i, /date/i],
-  barn: [/barn/i, /site/i, /location/i, /room/i, /farm/i],
-  group: [/group.?id/i, /^group/i, /group/i, /^lot/i],
-  treatment: [/^treatment$/i, /treatment(?!.*(date|by|time|group))/i, /product/i, /medic|drug|vaccin|antibiotic/i],
-  animal: [/ear.?tag/i, /tag/i, /tattoo/i, /animal|pig.?id|sow.?id/i],
-  qty: [/head/i, /number.?treated|count|qty|quantity/i],
+  barn: [/barn.?name/i, /^barn$/i, /barn(?!.*(center|location|code))/i, /site/i, /room/i, /farm/i],
+  group: [/group.?id(?!.*lookup)/i, /group.?id/i, /^group/i, /^lot/i],
+  treatment: [/treat.?name/i, /^treatment$/i, /^product$/i, /treatment(?!.*(date|by|time|group|cost|lookup))/i, /product/i, /medic|drug(?!.*center)|vaccin|antibiotic/i],
+  type: [/^type$/i, /treat.*type|route/i],
+  category: [/fda|category/i],
+  animal: [/ear.?tag/i, /\btag\b|_tag/i, /tattoo/i, /animal|pig.?id|sow.?id/i],
+  head: [/number.?head|head.?treated|^head$|_head\b/i],
+  qty: [/qty|quantity/i, /dose.?cc/i],
+  unit: [/application.?unit|^units?$/i],
+  cost: [/total.*cost|cost/i],
   by: [/treated.?by|employee|technician|initials?/i],
 };
-const MAP_KEY = 'treatments-field-map-v1';
+const MAP_KEY = 'treatments-field-map-v2';
 const PER_PAGE = 50;
 
 let RAW = { group: [], individual: [] }, META = {}, MAP = {}, AUTO = {}, FIELDS = {};
 let ROWS = [], FILTERED = [], demo = false;
-const F = { form: 'all', from: '', to: '', barn: '', group: '', treatment: '', by: '', q: '' };
+const F = { form: 'all', from: '', to: '', barn: '', group: '', treatment: '', type: '', category: '', by: '', q: '' };
+const PICKS = [['fBarn', 'barn'], ['fGroup', 'group'], ['fTreatment', 'treatment'], ['fType', 'type'], ['fCategory', 'category'], ['fBy', 'by']];
 let sort = { key: 'date', dir: -1 }, page = 0, openId = null, charts = {};
 
 const $ = id => document.getElementById(id);
