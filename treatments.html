@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Treatments Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#f5f4ef; --surface:#ffffff; --surface-2:#efede6; --text:#1c2420; --muted:#667069;
+  --border:#e0ddd3; --accent:#2f6b4f; --accent-soft:#e2eee7; --accent-2:#c27b2c; --accent-2-soft:#f6e9d8;
+  --warn:#9a5b12; --warn-bg:#fbf0dc; --danger:#a9402c; --grid:#ebe8e0;
+  --radius:10px; --shadow:0 1px 2px rgba(20,30,25,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141816; --surface:#1c211e; --surface-2:#242a26; --text:#e6eae7; --muted:#97a19b;
+    --border:#2f3632; --accent:#6fbf96; --accent-soft:#1f3329; --accent-2:#e0a35c; --accent-2-soft:#3a2b1a;
+    --warn:#f0c27a; --warn-bg:#33281a; --danger:#ef8a74; --grid:#2a302c; --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141816; --surface:#1c211e; --surface-2:#242a26; --text:#e6eae7; --muted:#97a19b;
+  --border:#2f3632; --accent:#6fbf96; --accent-soft:#1f3329; --accent-2:#e0a35c; --accent-2-soft:#3a2b1a;
+  --warn:#f0c27a; --warn-bg:#33281a; --danger:#ef8a74; --grid:#2a302c; --shadow:none;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1320px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;justify-content:space-between;margin-bottom:14px}
+h1{font-size:22px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px;margin-top:2px}
+.status{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pill{display:inline-flex;gap:6px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.pill b{color:var(--text);font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.dot.warn{background:var(--accent-2)} .dot.bad{background:var(--danger)}
+button,.btn{font:inherit;font-size:13px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;padding:6px 11px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.banner{background:var(--warn-bg);color:var(--warn);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;margin-bottom:12px;font-size:13px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+.filters{padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:10px;align-items:end}
+.filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+input,select{font:inherit;font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:6px 8px;width:100%;min-width:0}
+input:focus,select:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.quick{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{font-size:12px;padding:4px 10px;border-radius:999px}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.seg button{border:0;border-radius:0;border-right:1px solid var(--border)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--accent);color:var(--surface)}
+.spacer{flex:1}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+.kpi{padding:12px 14px}
+.kpi .l{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+.kpi .v{font-size:24px;font-weight:650;margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .s{font-size:12px;color:var(--muted)}
+.charts{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.charts .wide{grid-column:1/-1}
+.panel{padding:12px 14px}
+.panel h2{font-size:13px;margin:0 0 8px;font-weight:650}
+.panel h2 span{color:var(--muted);font-weight:400}
+.chartbox{position:relative;height:240px}
+.chartbox.tall{height:300px}
+.tablehead{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border)}
+.tablehead h2{margin:0;font-size:13px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--grid);white-space:nowrap}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);cursor:pointer;user-select:none;background:var(--surface);position:sticky;top:0}
+th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover{background:var(--surface-2)}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px}
+.tag.group{background:var(--accent-soft);color:var(--accent)}
+.tag.individual{background:var(--accent-2-soft);color:var(--accent-2)}
+.detail td{background:var(--surface-2);white-space:normal}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px 16px;font-size:12px}
+.kv div{display:flex;gap:6px;min-width:0}
+.kv span:first-child{color:var(--muted);flex-shrink:0}
+.kv span:last-child{overflow-wrap:anywhere}
+.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:10px 14px;color:var(--muted);font-size:12px}
+.empty{padding:28px;text-align:center;color:var(--muted)}
+details.mapping{margin-top:12px}
+details.mapping summary{cursor:pointer;padding:12px 14px;font-weight:600;font-size:13px}
+.mapgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:0 14px 14px}
+.mapgrid h3{font-size:12px;margin:0 0 6px}
+.maprow{display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center;margin-bottom:6px;font-size:12px;color:var(--muted)}
+.hint{font-size:12px;color:var(--muted);padding:0 14px 12px}
+@media (max-width:820px){.charts{grid-template-columns:1fr}.kpi .v{font-size:20px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Treatments</h1>
+      <div class="sub">Group &amp; individual treatment records from doForms</div>
+    </div>
+    <div class="status" id="status"></div>
+  </header>
+
+  <div id="banner"></div>
+
+  <section class="card filters" aria-label="Filters">
+    <div class="quick">
+      <span class="seg" id="formSeg">
+        <button data-form="all" class="on">All</button>
+        <button data-form="group">Group</button>
+        <button data-form="individual">Individual</button>
+      </span>
+      <span style="width:8px"></span>
+      <button class="chip" data-days="7">7 days</button>
+      <button class="chip" data-days="30">30 days</button>
+      <button class="chip" data-days="90">90 days</button>
+      <button class="chip" data-days="ytd">This year</button>
+      <button class="chip" data-days="all">All time</button>
+      <span class="spacer"></span>
+      <button id="clearBtn">Clear filters</button>
+    </div>
+    <label>From<input type="date" id="fFrom"></label>
+    <label>To<input type="date" id="fTo"></label>
+    <label>Barn<select id="fBarn"></select></label>
+    <label>Group<select id="fGroup"></select></label>
+    <label>Treatment<select id="fTreatment"></select></label>
+    <label>Entered by<select id="fBy"></select></label>
+    <label>Search<input type="search" id="fQ" placeholder="Any field…"></label>
+  </section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="charts">
+    <div class="card panel wide">
+      <h2>Treatments over time <span id="bucketLabel"></span></h2>
+      <div class="chartbox"><canvas id="cTime"></canvas></div>
+    </div>
+    <div class="card panel">
+      <h2>Top treatments <span>· click a bar to filter</span></h2>
+      <div class="chartbox tall"><canvas id="cTreat"></canvas></div>
+    </div>
+    <div class="card panel">
+      <h2>By barn <span>· click to filter</span></h2>
+      <div class="chartbox tall"><canvas id="cBarn"></canvas></div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:12px">
+    <div class="tablehead">
+      <h2 id="tableTitle">Records</h2>
+      <span class="spacer"></span>
+      <button id="csvBtn">Export CSV</button>
+    </div>
+    <div class="scroll"><table id="tbl"></table></div>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <details class="card mapping" id="mapping">
+    <summary>Field mapping</summary>
+    <div class="hint">The dashboard guesses which doForms field is the date, barn, group and so on. If a column looks wrong, pick the right field here. Your choice is saved in this browser.</div>
+    <div class="mapgrid" id="mapgrid"></div>
+    <div class="hint"><button id="mapReset">Reset to automatic</button></div>
+  </details>
+</div>
+
+<script>
+(() => {
+const API = '/api/treatments';
+const FORMS = { group: 'Group Treatments', individual: 'Individual Treatments' };
+const ROLES = [
+  { id: 'date', label: 'Date' }, { id: 'barn', label: 'Barn' }, { id: 'group', label: 'Group' },
+  { id: 'treatment', label: 'Treatment' }, { id: 'animal', label: 'Animal / tag' },
+  { id: 'qty', label: 'Head / qty' }, { id: 'by', label: 'Entered by' },
+  { id: 'lines', label: 'Table (1 row per line)' },
+];
+const DETECT = {
+  date: [/treat.*date|date.*treat/i, /^date$/i, /date/i],
+  barn: [/barn/i, /site/i, /location/i, /room/i, /farm/i],
+  group: [/group.?id/i, /^group/i, /group/i, /^lot/i],
+  treatment: [/^treatment$/i, /treatment(?!.*(date|by|time|group))/i, /product/i, /medic|drug|vaccin|antibiotic/i],
+  animal: [/ear.?tag/i, /tag/i, /tattoo/i, /animal|pig.?id|sow.?id/i],
+  qty: [/head/i, /number.?treated|count|qty|quantity/i],
+  by: [/treated.?by|employee|technician|initials?/i],
+};
+const MAP_KEY = 'treatments-field-map-v1';
+const PER_PAGE = 50;
+
+let RAW = { group: [], individual: [] }, META = {}, MAP = {}, AUTO = {}, FIELDS = {};
+let ROWS = [], FILTERED = [], demo = false;
+const F = { form: 'all', from: '', to: '', barn: '', group: '', treatment: '', by: '', q: '' };
+let sort = { key: 'date', dir: -1 }, page = 0, openId = null, charts = {};
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmtN = n => (n ?? 0).toLocaleString();
+const pad = n => String(n).padStart(2, '0');
+const dayKey = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromKey = k => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+const fmtDay = k => k ? fromKey(k).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+function toDate(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return new Date(v > 1e12 ? v : v * 1000);
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|T00:00:00(?:\.000)?Z$)/);   // date-only (doForms stores as UTC midnight)
+  if (m) return new Date(+m[1], m[2] - 1, +m[3]);
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) return new Date(m[3].length === 2 ? 2000 + +m[3] : +m[3], m[1] - 1, +m[2]);
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+}
+const str = v => v == null ? '' : Array.isArray(v) ? (v.length && typeof v[0] === 'object' ? '' : v.join(', ')) : typeof v === 'object' ? '' : String(v).trim();
+const num = v => { if (v == null || v === '') return null; const n = Number(v); return isNaN(n) ? null : n; };
+
+// ---------- field detection ----------
+function scanFields(form) {
+  const parent = new Set(), line = new Set(), tables = new Set();
+  for (const r of RAW[form].slice(0, 300)) {
+    for (const [k, v] of Object.entries(r)) {
+      if (Array.isArray(v) && v.length && typeof v[0] === 'object') {
+        tables.add(k); v.forEach(row => Object.keys(row || {}).forEach(x => line.add(x)));
+      } else parent.add(k);
+    }
+  }
+  return { parent: [...parent], line: [...line], tables: [...tables] };
+}
+function detect(form) {
+  const fs = FIELDS[form], out = {};
+  const pool = [...fs.parent, ...fs.line].filter(n => !n.startsWith('_'));
+  const used = new Set();
+  for (const role of Object.keys(DETECT)) {
+    for (const re of DETECT[role]) {
+      const hit = pool.find(n => re.test(n) && !used.has(n));
+      if (hit) { out[role] = hit; used.add(hit); break; }
+    }
+  }
+  if (!out.date) out.date = '_createTime';
+  if (!out.by) out.by = '_enteredBy';
+  out.lines = fs.tables[0] || '';
+  return out;
+}
+function setupMapping() {
+  const saved = store.get(MAP_KEY) || {};
+  for (const form of Object.keys(FORMS)) {
+    FIELDS[form] = scanFields(form);
+    AUTO[form] = detect(form);
+    MAP[form] = { ...AUTO[form], ...(saved[form] || {}) };
+  }
+}
+
+// ---------- rows ----------
+function buildRows() {
+  ROWS = [];
+  for (const form of Object.keys(FORMS)) {
+    const m = MAP[form];
+    for (const raw of RAW[form]) {
+      const lines = m.lines && Array.isArray(raw[m.lines]) && raw[m.lines].length ? raw[m.lines] : [null];
+      lines.forEach((ln, li) => {
+        const src = ln ? { ...raw, ...ln } : raw;
+        const g = k => k ? src[k] : null;
+        const d = toDate(g(m.date)) || toDate(raw._createTime) || toDate(raw._receiveTime);
+        const row = {
+          uid: form + ':' + raw._id + (ln ? '#' + li : ''), form, raw: src, d,
+          date: d ? dayKey(d) : '',
+          barn: str(g(m.barn)), group: str(g(m.group)), treatment: str(g(m.treatment)),
+          animal: str(g(m.animal)), qty: num(g(m.qty)), by: str(g(m.by)),
+        };
+        row.search = Object.values(src).map(str).join(' ').toLowerCase();
+        ROWS.push(row);
+      });
+    }
+  }
+}
+
+// ---------- filters ----------
+function fillSelect(id, key, rows) {
+  const el = $(id), cur = F[key];
+  const counts = new Map();
+  rows.forEach(r => { if (r[key]) counts.set(r[key], (counts.get(r[key]) || 0) + 1); });
+  const vals = [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (cur && !counts.has(cur)) vals.unshift(cur);
+  el.innerHTML = `<option value="">All (${vals.length})</option>` +
+    vals.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(v)}${counts.has(v) ? ' · ' + counts.get(v) : ''}</option>`).join('');
+}
+function passes(r, skip) {
+  if (F.form !== 'all' && r.form !== F.form) return false;
+  if (F.from && (!r.date || r.date < F.from)) return false;
+  if (F.to && (!r.date || r.date > F.to)) return false;
+  for (const k of ['barn', 'group', 'treatment', 'by']) if (k !== skip && F[k] && r[k] !== F[k]) return false;
+  if (F.q && !r.search.includes(F.q.toLowerCase())) return false;
+  return true;
+}
+function apply() {
+  FILTERED = ROWS.filter(r => passes(r));
+  // each dropdown lists values available under the *other* filters
+  fillSelect('fBarn', 'barn', ROWS.filter(r => passes(r, 'barn')));
+  fillSelect('fGroup', 'group', ROWS.filter(r => passes(r, 'group')));
+  fillSelect('fTreatment', 'treatment', ROWS.filter(r => passes(r, 'treatment')));
+  fillSelect('fBy', 'by', ROWS.filter(r => passes(r, 'by')));
+  $('fFrom').value = F.from; $('fTo').value = F.to;
+  document.querySelectorAll('#formSeg button').forEach(b => b.classList.toggle('on', b.dataset.form === F.form));
+  page = 0;
+  renderKPIs(); renderCharts(); renderTable();
+}
+function setRange(days) {
+  const t = new Date(); F.to = '';
+  if (days === 'all') F.from = '';
+  else if (days === 'ytd') F.from = `${t.getFullYear()}-01-01`;
+  else { const f = new Date(t); f.setDate(f.getDate() - (+days - 1)); F.from = dayKey(f); }
+  document.querySelectorAll('[data-days]').forEach(b => b.classList.toggle('on', b.dataset.days === String(days)));
+  apply();
+}
+
+// ---------- KPIs ----------
+function top(rows, key) {
+  const m = new Map(); rows.forEach(r => r[key] && m.set(r[key], (m.get(r[key]) || 0) + 1));
+  return [...m.entries()].sort((a, b) => b[1] - a[1]);
+}
+function renderKPIs() {
+  const R = FILTERED, g = R.filter(r => r.form === 'group').length, i = R.length - g;
+  const head = R.reduce((s, r) => s + (r.qty || 0), 0), hasQty = R.some(r => r.qty != null);
+  const groups = new Set(R.map(r => r.group).filter(Boolean)).size;
+  const barns = new Set(R.map(r => r.barn).filter(Boolean)).size;
+  const tt = top(R, 'treatment')[0];
+  const k = [
+    ['Treatment records', fmtN(R.length), `${fmtN(g)} group · ${fmtN(i)} individual`],
+    hasQty ? ['Head / qty treated', fmtN(Math.round(head)), 'sum of mapped quantity'] : null,
+    ['Groups treated', fmtN(groups), ''],
+    ['Barns', fmtN(barns), ''],
+    ['Top treatment', tt ? esc(tt[0]) : '—', tt ? `${fmtN(tt[1])} records` : ''],
+  ].filter(Boolean);
+  $('kpis').innerHTML = k.map(([l, v, s]) => `<div class="card kpi"><div class="l">${l}</div><div class="v" title="${v}">${v}</div><div class="s">${s}</div></div>`).join('');
+}
+
+// ---------- charts ----------
+function mk(id, cfg) {
+  if (!window.Chart) return;
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), cfg);
+}
+function baseOpts(extra) {
+  const grid = css('--grid'), muted = css('--muted');
+  return Object.assign({
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+    scales: {
+      x: { grid: { color: grid }, ticks: { color: muted, maxRotation: 0, autoSkip: true } },
+      y: { grid: { color: grid }, ticks: { color: muted, precision: 0 }, beginAtZero: true },
+    },
+  }, extra);
+}
+function renderCharts() {
+  if (!window.Chart) { document.querySelectorAll('.charts').forEach(e => e.style.display = 'none'); return; }
+  const R = FILTERED.filter(r => r.date);
+  // time buckets
+  let start = F.from || (R.length ? R.reduce((a, r) => r.date < a ? r.date : a, R[0].date) : dayKey(new Date()));
+  let end = F.to || (R.length ? R.reduce((a, r) => r.date > a ? r.date : a, R[0].date) : dayKey(new Date()));
+  if (end < start) end = start;
+  const spanDays = Math.round((fromKey(end) - fromKey(start)) / 864e5) + 1;
+  const weekly = spanDays > 120;
+  const bucket = k => { if (!weekly) return k; const d = fromKey(k); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return dayKey(d); };
+  const labels = [];
+  for (let d = fromKey(bucket(start)); dayKey(d) <= end; d.setDate(d.getDate() + (weekly ? 7 : 1))) labels.push(dayKey(d));
+  const idx = new Map(labels.map((l, n) => [l, n]));
+  const gs = labels.map(() => 0), is = labels.map(() => 0);
+  R.forEach(r => { const n = idx.get(bucket(r.date)); if (n != null) (r.form === 'group' ? gs : is)[n]++; });
+  $('bucketLabel').textContent = weekly ? '· per week' : '· per day';
+  const ds = [];
+  if (F.form !== 'individual') ds.push({ label: 'Group', data: gs, backgroundColor: css('--accent'), stack: 's' });
+  if (F.form !== 'group') ds.push({ label: 'Individual', data: is, backgroundColor: css('--accent-2'), stack: 's' });
+  const o = baseOpts();
+  o.plugins.legend = { display: ds.length > 1, position: 'top', align: 'end', labels: { color: css('--muted'), boxWidth: 10, boxHeight: 10 } };
+  o.scales.x.stacked = o.scales.y.stacked = true;
+  o.plugins.tooltip.callbacks = { title: items => (weekly ? 'Week of ' : '') + fmtDay(labels[items[0].dataIndex]) };
+  mk('cTime', { type: 'bar', data: { labels: labels.map(l => fromKey(l).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })), datasets: ds }, options: o });
+
+  const hbar = (id, key, color) => {
+    const t = top(FILTERED, key).slice(0, 12);
+    const ho = baseOpts({ indexAxis: 'y' });
+    ho.scales.x.ticks.precision = 0;
+    ho.scales.y.grid = { display: false };
+    ho.scales.y.ticks.callback = function (v) { const s = this.getLabelForValue(v); return s.length > 22 ? s.slice(0, 21) + '…' : s; };
+    ho.onClick = (e, els) => { if (els.length) { F[key] = F[key] === t[els[0].index][0] ? '' : t[els[0].index][0]; apply(); } };
+    ho.onHover = (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; };
+    mk(id, { type: 'bar', data: { labels: t.map(x => x[0]), datasets: [{ data: t.map(x => x[1]), backgroundColor: t.map(x => F[key] && x[0] !== F[key] ? css('--surface-2') : color), borderRadius: 4 }] }, options: ho });
+  };
+  hbar('cTreat', 'treatment', css('--accent'));
+  hbar('cBarn', 'barn', css('--accent-2'));
+}
+
+// ---------- table ----------
+const COLS = [
+  { k: 'date', l: 'Date' }, { k: 'form', l: 'Form' }, { k: 'barn', l: 'Barn' }, { k: 'group', l: 'Group' },
+  { k: 'treatment', l: 'Treatment' }, { k: 'animal', l: 'Animal / tag' }, { k: 'qty', l: 'Qty', num: true }, { k: 'by', l: 'Entered by' },
+];
+function visibleCols() { return COLS.filter(c => c.k === 'date' || c.k === 'form' || FILTERED.some(r => r[c.k] != null && r[c.k] !== '')); }
+function sorted() {
+  const k = sort.key, d = sort.dir;
+  return [...FILTERED].sort((a, b) => {
+    const x = a[k], y = b[k];
+    if (x == null || x === '') return 1; if (y == null || y === '') return -1;
+    return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true })) * d
+      || (b.d && a.d ? b.d - a.d : 0);
+  });
+}
+function cell(r, c) {
+  if (c.k === 'date') return esc(fmtDay(r.date));
+  if (c.k === 'form') return `<span class="tag ${r.form}">${r.form === 'group' ? 'Group' : 'Individual'}</span>`;
+  if (c.k === 'qty') return r.qty == null ? '' : fmtN(r.qty);
+  return esc(r[c.k]);
+}
+function detailHTML(r) {
+  const nice = { _createTime: 'Created', _receiveTime: 'Received', _updateTime: 'Edited', _enteredBy: 'Entered by', _id: 'doForms id' };
+  const items = Object.entries(r.raw).filter(([k, v]) => str(v) !== '' && !(Array.isArray(v) && typeof v[0] === 'object'));
+  const show = v => {
+    const s = str(v);
+    if (!/^\d{4}-\d{2}-\d{2}T/.test(s)) return s;
+    if (/T00:00:00(\.000)?Z$/.test(s)) return fmtDay(dayKey(toDate(s)));
+    const d = new Date(s); return isNaN(d) ? s : d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  };
+  return `<div class="kv">${items.map(([k, v]) => `<div><span>${esc(nice[k] || k)}:</span><span>${esc(show(v))}</span></div>`).join('')}</div>`;
+}
+function renderTable() {
+  const cols = visibleCols(), rows = sorted();
+  const pages = Math.max(1, Math.ceil(rows.length / PER_PAGE));
+  page = Math.min(page, pages - 1);
+  const slice = rows.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
+  $('tableTitle').textContent = `Records · ${fmtN(rows.length)}`;
+  if (!rows.length) {
+    $('tbl').innerHTML = `<tbody><tr><td class="empty">${ROWS.length ? 'No records match these filters. Try a wider date range or Clear filters.' : 'No records yet. Run the first sync (see setup steps).'}</td></tr></tbody>`;
+    $('pager').innerHTML = ''; return;
+  }
+  const arrow = k => sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : '';
+  $('tbl').innerHTML = `<thead><tr>${cols.map(c => `<th data-k="${c.k}" class="${c.num ? 'num' : ''}">${c.l}${arrow(c.k)}</th>`).join('')}</tr></thead><tbody>` +
+    slice.map(r => `<tr class="row" data-uid="${esc(r.uid)}">${cols.map(c => `<td class="${c.num ? 'num' : ''}">${cell(r, c)}</td>`).join('')}</tr>` +
+      (openId === r.uid ? `<tr class="detail"><td colspan="${cols.length}">${detailHTML(r)}</td></tr>` : '')).join('') + '</tbody>';
+  $('pager').innerHTML = pages > 1
+    ? `<span>Page ${page + 1} of ${pages}</span><button ${page ? '' : 'disabled'} data-p="-1">‹ Prev</button><button ${page < pages - 1 ? '' : 'disabled'} data-p="1">Next ›</button>`
+    : '';
+}
+$('tbl').addEventListener('click', e => {
+  const th = e.target.closest('th');
+  if (th) { const k = th.dataset.k; sort = { key: k, dir: sort.key === k ? -sort.dir : (k === 'date' ? -1 : 1) }; renderTable(); return; }
+  const tr = e.target.closest('tr.row');
+  if (tr) { openId = openId === tr.dataset.uid ? null : tr.dataset.uid; renderTable(); }
+});
+$('pager').addEventListener('click', e => { const b = e.target.closest('button[data-p]'); if (b) { page += +b.dataset.p; renderTable(); } });
+
+// ---------- CSV ----------
+$('csvBtn').addEventListener('click', () => {
+  const rows = sorted();
+  const extra = [...new Set(rows.flatMap(r => Object.keys(r.raw)))].filter(k => !(rows.some(r => Array.isArray(r.raw[k]) && typeof r.raw[k][0] === 'object')));
+  const head = ['Date', 'Form', 'Barn', 'Group', 'Treatment', 'Animal / tag', 'Qty', 'Entered by', ...extra];
+  const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const lines = [head.map(q).join(',')].concat(rows.map(r => [r.date, FORMS[r.form], r.barn, r.group, r.treatment, r.animal, r.qty, r.by, ...extra.map(k => str(r.raw[k]))].map(q).join(',')));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `treatments-${dayKey(new Date())}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+
+// ---------- mapping panel ----------
+function renderMapping() {
+  $('mapgrid').innerHTML = Object.keys(FORMS).map(form => {
+    const fs = FIELDS[form];
+    const all = [...new Set([...fs.parent, ...fs.line])].filter(n => !fs.tables.includes(n));
+    return `<div><h3>${FORMS[form]} <span style="color:var(--muted);font-weight:400">· ${fmtN(RAW[form].length)} records</span></h3>` +
+      ROLES.map(role => {
+        const opts = role.id === 'lines' ? fs.tables : all;
+        return `<div class="maprow"><span>${role.label}</span><select data-form="${form}" data-role="${role.id}"><option value="">(none)</option>` +
+          opts.map(n => `<option value="${esc(n)}"${MAP[form][role.id] === n ? ' selected' : ''}>${esc(n)}${AUTO[form][role.id] === n ? ' (auto)' : ''}</option>`).join('') + '</select></div>';
+      }).join('') + '</div>';
+  }).join('');
+}
+$('mapgrid').addEventListener('change', e => {
+  const s = e.target; if (!s.dataset.role) return;
+  MAP[s.dataset.form][s.dataset.role] = s.value;
+  const saved = {}; for (const f of Object.keys(FORMS)) saved[f] = MAP[f];
+  store.set(MAP_KEY, saved);
+  buildRows(); apply();
+});
+$('mapReset').addEventListener('click', () => { store.del(MAP_KEY); setupMapping(); renderMapping(); buildRows(); apply(); });
+
+// ---------- status ----------
+function ago(iso) {
+  if (!iso) return 'never';
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60); if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+function renderStatus() {
+  $('status').innerHTML = Object.keys(FORMS).map(form => {
+    const m = META[form] || {}, lr = m.lastResult || {};
+    const cls = lr.error || lr.rateLimited ? 'bad' : (lr.remaining > 0 || lr.skipped) ? 'warn' : '';
+    const note = lr.rateLimited ? ' · rate limited' : lr.error ? ' · last sync failed' : lr.remaining > 0 ? ` · ${fmtN(lr.remaining)} still to load` : '';
+    return `<span class="pill" title="${esc(lr.error || lr.skipped || '')}"><span class="dot ${cls}"></span><b>${form === 'group' ? 'Group' : 'Individual'}</b> ${fmtN(RAW[form].length)} · synced ${ago(m.lastSync)}${note}</span>`;
+  }).join('') + `<button id="reloadBtn">Refresh</button>`;
+  $('reloadBtn').onclick = () => load(true);
+}
+
+// ---------- demo data ----------
+function demoData() {
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const pick = a => a[Math.floor(rnd() * a.length)];
+  const barns = ['Barn 1', 'Barn 2', 'Barn 3', 'Barn 4', 'Barn 5', 'Barn 6'];
+  const groups = ['2634NN2EN', '2635NN1WS', '2638FN3EN', '2641NN2WS', '2644FN1EN', '2647NN4WS', '2650FN2EN', '2652NN3WS'];
+  const meds = ['Excede', 'Draxxin', 'Penicillin', 'Dexamethasone', 'Baytril', 'Amoxicillin (water)', 'Tylan', 'Banamine'];
+  const reasons = ['Respiratory', 'Lame', 'Scours', 'Strep', 'Unthrifty'];
+  const techs = ['J. Martinez', 'K. Olson', 'R. Nguyen', 'S. Becker'];
+  const iso = daysAgo => { const d = new Date(); d.setDate(d.getDate() - daysAgo); return `${dayKey(d)}T00:00:00.000Z`; };
+  const group = [], individual = [];
+  for (let n = 0; n < 220; n++) {
+    const a = Math.floor(rnd() * 120);
+    group.push({ _id: 'g' + n, _createTime: iso(a), _enteredBy: pick(techs), Treatment_Date: iso(a), Barn: pick(barns), GroupID: pick(groups),
+      Treatment: rnd() < .35 ? 'Amoxicillin (water)' : pick(meds), Reason: pick(reasons), Head_Treated: 20 + Math.floor(rnd() * 900), Dose: pick(['1 cc/40 lb', '2 cc', '5 cc']) });
+  }
+  for (let n = 0; n < 640; n++) {
+    const a = Math.floor(rnd() * 120);
+    individual.push({ _id: 'i' + n, _createTime: iso(a), _enteredBy: pick(techs), Date: iso(a), Barn: pick(barns), GroupID: pick(groups),
+      Pen: String(1 + Math.floor(rnd() * 40)), Ear_Tag: String(10000 + Math.floor(rnd() * 9000)), Product: pick(meds), Reason: pick(reasons), Dose_cc: pick([1, 2, 3, 5]) });
+  }
+  return { group, individual };
+}
+
+// ---------- load ----------
+async function load(isRefresh) {
+  const force = new URLSearchParams(location.search).get('demo') === '1';
+  let reason = '';
+  if (!force) {
+    try {
+      const r = await fetch(`${API}?form=all&t=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`API returned ${r.status}`);
+      const j = await r.json();
+      for (const form of Object.keys(FORMS)) {
+        const f = j.forms?.[form] || {};
+        RAW[form] = f.records || []; META[form] = f;
+      }
+      demo = false;
+    } catch (e) { reason = e.message; }
+  }
+  if (force || reason) {
+    const d = demoData(); RAW = d; demo = true;
+    for (const form of Object.keys(FORMS)) META[form] = { lastSync: new Date().toISOString(), lastResult: {} };
+  }
+  $('banner').innerHTML = demo
+    ? `<div class="banner"><b>Showing sample data.</b> ${force ? 'Remove <code>?demo=1</code> from the address to see live records.' : `Couldn't reach ${API} (${esc(reason)}). This page needs to run on the same Vercel site as the API.`}</div>`
+    : '';
+  setupMapping(); renderMapping(); buildRows(); renderStatus();
+  if (!isRefresh) setRange(90); else apply();
+}
+
+// ---------- wire up ----------
+document.querySelectorAll('[data-days]').forEach(b => b.addEventListener('click', () => setRange(b.dataset.days)));
+$('formSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { F.form = b.dataset.form; apply(); } });
+$('fFrom').addEventListener('change', e => { F.from = e.target.value; document.querySelectorAll('[data-days]').forEach(b => b.classList.remove('on')); apply(); });
+$('fTo').addEventListener('change', e => { F.to = e.target.value; document.querySelectorAll('[data-days]').forEach(b => b.classList.remove('on')); apply(); });
+[['fBarn', 'barn'], ['fGroup', 'group'], ['fTreatment', 'treatment'], ['fBy', 'by']].forEach(([id, k]) => $(id).addEventListener('change', e => { F[k] = e.target.value; apply(); }));
+let qt; $('fQ').addEventListener('input', e => { clearTimeout(qt); qt = setTimeout(() => { F.q = e.target.value.trim(); apply(); }, 200); });
+$('clearBtn').addEventListener('click', () => { Object.assign(F, { form: 'all', barn: '', group: '', treatment: '', by: '', q: '' }); $('fQ').value = ''; setRange(90); });
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => renderCharts());
+setInterval(() => { if (!demo && document.visibilityState === 'visible') load(true); }, 5 * 60 * 1000);
+load(false);
+})();
+</script>
+</body>
+</html>
