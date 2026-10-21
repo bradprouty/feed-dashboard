@@ -125,6 +125,8 @@ details.mapping summary{cursor:pointer;padding:12px 14px;font-weight:600;font-si
     <label>Barn<select id="fBarn"></select></label>
     <label>Group<select id="fGroup"></select></label>
     <label>Treatment<select id="fTreatment"></select></label>
+    <label>Type<select id="fType"></select></label>
+    <label>FDA category<select id="fCategory"></select></label>
     <label>Entered by<select id="fBy"></select></label>
     <label>Search<input type="search" id="fQ" placeholder="Any field…"></label>
   </section>
@@ -266,8 +268,13 @@ function setupMapping() {
   const saved = store.get(MAP_KEY) || {};
   for (const form of Object.keys(FORMS)) {
     FIELDS[form] = scanFields(form);
-    AUTO[form] = detect(form);
-    MAP[form] = { ...AUTO[form], ...(saved[form] || {}) };
+    const auto = detect(form);
+    const have = new Set([...FIELDS[form].parent, ...FIELDS[form].line, ...FIELDS[form].tables]);
+    for (const [role, field] of Object.entries(KNOWN[form] || {})) {
+      if (!field || field.startsWith('_') || have.has(field) || !RAW[form].length) auto[role] = field;
+    }
+    AUTO[form] = auto;
+    MAP[form] = { ...auto, ...(saved[form] || {}) };
   }
 }
 
@@ -286,7 +293,8 @@ function buildRows() {
           uid: form + ':' + raw._id + (ln ? '#' + li : ''), form, raw: src, d,
           date: d ? dayKey(d) : '',
           barn: str(g(m.barn)), group: str(g(m.group)), treatment: str(g(m.treatment)),
-          animal: str(g(m.animal)), qty: num(g(m.qty)), by: str(g(m.by)),
+          type: str(g(m.type)), category: str(g(m.category)), animal: str(g(m.animal)),
+          head: num(g(m.head)), qty: num(g(m.qty)), unit: str(g(m.unit)), cost: num(g(m.cost)), by: str(g(m.by)),
         };
         row.search = Object.values(src).map(str).join(' ').toLowerCase();
         ROWS.push(row);
@@ -309,17 +317,18 @@ function passes(r, skip) {
   if (F.form !== 'all' && r.form !== F.form) return false;
   if (F.from && (!r.date || r.date < F.from)) return false;
   if (F.to && (!r.date || r.date > F.to)) return false;
-  for (const k of ['barn', 'group', 'treatment', 'by']) if (k !== skip && F[k] && r[k] !== F[k]) return false;
+  for (const [, k] of PICKS) if (k !== skip && F[k] && r[k] !== F[k]) return false;
   if (F.q && !r.search.includes(F.q.toLowerCase())) return false;
   return true;
 }
 function apply() {
   FILTERED = ROWS.filter(r => passes(r));
   // each dropdown lists values available under the *other* filters
-  fillSelect('fBarn', 'barn', ROWS.filter(r => passes(r, 'barn')));
-  fillSelect('fGroup', 'group', ROWS.filter(r => passes(r, 'group')));
-  fillSelect('fTreatment', 'treatment', ROWS.filter(r => passes(r, 'treatment')));
-  fillSelect('fBy', 'by', ROWS.filter(r => passes(r, 'by')));
+  for (const [id, k] of PICKS) {
+    const pool = ROWS.filter(r => passes(r, k));
+    fillSelect(id, k, pool);
+    $(id).closest('label').style.display = ROWS.some(r => r[k]) ? '' : 'none';   // hide filters with no data
+  }
   $('fFrom').value = F.from; $('fTo').value = F.to;
   document.querySelectorAll('#formSeg button').forEach(b => b.classList.toggle('on', b.dataset.form === F.form));
   page = 0;
@@ -341,13 +350,15 @@ function top(rows, key) {
 }
 function renderKPIs() {
   const R = FILTERED, g = R.filter(r => r.form === 'group').length, i = R.length - g;
-  const head = R.reduce((s, r) => s + (r.qty || 0), 0), hasQty = R.some(r => r.qty != null);
+  const head = R.reduce((s, r) => s + (r.head || 0), 0), hasHead = R.some(r => r.head != null);
+  const cost = R.reduce((s, r) => s + (r.cost || 0), 0), hasCost = R.some(r => r.cost != null);
   const groups = new Set(R.map(r => r.group).filter(Boolean)).size;
   const barns = new Set(R.map(r => r.barn).filter(Boolean)).size;
   const tt = top(R, 'treatment')[0];
   const k = [
     ['Treatment records', fmtN(R.length), `${fmtN(g)} group · ${fmtN(i)} individual`],
-    hasQty ? ['Head / qty treated', fmtN(Math.round(head)), 'sum of mapped quantity'] : null,
+    hasHead ? ['Head treated', fmtN(Math.round(head)), 'sum across records'] : null,
+    hasCost ? ['Treatment cost', '$' + fmtN(Math.round(cost)), 'sum across records'] : null,
     ['Groups treated', fmtN(groups), ''],
     ['Barns', fmtN(barns), ''],
     ['Top treatment', tt ? esc(tt[0]) : '—', tt ? `${fmtN(tt[1])} records` : ''],
@@ -414,7 +425,8 @@ function renderCharts() {
 // ---------- table ----------
 const COLS = [
   { k: 'date', l: 'Date' }, { k: 'form', l: 'Form' }, { k: 'barn', l: 'Barn' }, { k: 'group', l: 'Group' },
-  { k: 'treatment', l: 'Treatment' }, { k: 'animal', l: 'Animal / tag' }, { k: 'qty', l: 'Qty', num: true }, { k: 'by', l: 'Entered by' },
+  { k: 'treatment', l: 'Treatment' }, { k: 'type', l: 'Type' }, { k: 'animal', l: 'Animal / tag' },
+  { k: 'head', l: 'Head', num: true }, { k: 'qty', l: 'Qty used', num: true }, { k: 'cost', l: 'Cost', num: true }, { k: 'by', l: 'Entered by' },
 ];
 function visibleCols() { return COLS.filter(c => c.k === 'date' || c.k === 'form' || FILTERED.some(r => r[c.k] != null && r[c.k] !== '')); }
 function sorted() {
@@ -429,7 +441,9 @@ function sorted() {
 function cell(r, c) {
   if (c.k === 'date') return esc(fmtDay(r.date));
   if (c.k === 'form') return `<span class="tag ${r.form}">${r.form === 'group' ? 'Group' : 'Individual'}</span>`;
-  if (c.k === 'qty') return r.qty == null ? '' : fmtN(r.qty);
+  if (c.k === 'head') return r.head == null ? '' : fmtN(r.head);
+  if (c.k === 'qty') return r.qty == null ? '' : `${fmtN(r.qty)}${r.unit ? ' ' + esc(r.unit) : ''}`;
+  if (c.k === 'cost') return r.cost == null ? '' : '$' + r.cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return esc(r[c.k]);
 }
 function detailHTML(r) {
@@ -473,9 +487,9 @@ $('pager').addEventListener('click', e => { const b = e.target.closest('button[d
 $('csvBtn').addEventListener('click', () => {
   const rows = sorted();
   const extra = [...new Set(rows.flatMap(r => Object.keys(r.raw)))].filter(k => !(rows.some(r => Array.isArray(r.raw[k]) && typeof r.raw[k][0] === 'object')));
-  const head = ['Date', 'Form', 'Barn', 'Group', 'Treatment', 'Animal / tag', 'Qty', 'Entered by', ...extra];
+  const head = ['Date', 'Form', 'Barn', 'Group', 'Treatment', 'Type', 'FDA category', 'Animal / tag', 'Head', 'Qty used', 'Unit', 'Cost', 'Entered by', ...extra];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const lines = [head.map(q).join(',')].concat(rows.map(r => [r.date, FORMS[r.form], r.barn, r.group, r.treatment, r.animal, r.qty, r.by, ...extra.map(k => str(r.raw[k]))].map(q).join(',')));
+  const lines = [head.map(q).join(',')].concat(rows.map(r => [r.date, FORMS[r.form], r.barn, r.group, r.treatment, r.type, r.category, r.animal, r.head, r.qty, r.unit, r.cost, r.by, ...extra.map(k => str(r.raw[k]))].map(q).join(',')));
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = `treatments-${dayKey(new Date())}.csv`;
@@ -526,17 +540,22 @@ function renderStatus() {
 function demoData() {
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const pick = a => a[Math.floor(rnd() * a.length)];
-  const barns = ['Barn 1', 'Barn 2', 'Barn 3', 'Barn 4', 'Barn 5', 'Barn 6'];
+  const barns = ['ERF North', 'ERF South', 'Hilltop 1', 'Hilltop 2', 'Creekside', 'West Finisher'];
   const groups = ['2634NN2EN', '2635NN1WS', '2638FN3EN', '2641NN2WS', '2644FN1EN', '2647NN4WS', '2650FN2EN', '2652NN3WS'];
   const meds = ['Excede', 'Draxxin', 'Penicillin', 'Dexamethasone', 'Baytril', 'Amoxicillin (water)', 'Tylan', 'Banamine'];
+  const drugs = [['SOL Pulmotil AC', 'WATER', 'Critically Important', 'BTL', 65], ['Amoxicillin', 'WATER', 'Highly Important', 'PKG', 42],
+    ['Excede', 'INJECTABLE', 'Highly Important', 'ML', 3.1], ['Draxxin', 'INJECTABLE', 'Critically Important', 'ML', 5.4],
+    ['Tylan 200', 'INJECTABLE', 'Critically Important', 'ML', 0.9], ['Denagard', 'WATER', 'Not Medically Important', 'GAL', 88]];
   const reasons = ['Respiratory', 'Lame', 'Scours', 'Strep', 'Unthrifty'];
   const techs = ['J. Martinez', 'K. Olson', 'R. Nguyen', 'S. Becker'];
   const iso = daysAgo => { const d = new Date(); d.setDate(d.getDate() - daysAgo); return `${dayKey(d)}T00:00:00.000Z`; };
   const group = [], individual = [];
   for (let n = 0; n < 220; n++) {
     const a = Math.floor(rnd() * 120);
-    group.push({ _id: 'g' + n, _createTime: iso(a), _enteredBy: pick(techs), Treatment_Date: iso(a), Barn: pick(barns), GroupID: pick(groups),
-      Treatment: rnd() < .35 ? 'Amoxicillin (water)' : pick(meds), Reason: pick(reasons), Head_Treated: 20 + Math.floor(rnd() * 900), Dose: pick(['1 cc/40 lb', '2 cc', '5 cc']) });
+    const [nm, ty, cat, un, pr] = rnd() < .3 ? drugs[0] : pick(drugs), q = 1 + Math.floor(rnd() * 8);
+    group.push({ _id: 'g' + n, _createTime: iso(a), G_Treat_Date: iso(a), Barn_Name: pick(barns), G_Treat_Group_ID: pick(groups),
+      Treat_Name: nm, Type: ty, FDA_Category: cat, Group_Number_Head: 200 + Math.floor(rnd() * 1200), Treat_G_Qty: q,
+      Application_Unit: un, Total_Treatment_Cost: Math.round(q * pr * 100) / 100, Treat_G_Avg_Wgt: 15 + Math.floor(rnd() * 250) });
   }
   for (let n = 0; n < 640; n++) {
     const a = Math.floor(rnd() * 120);
@@ -578,9 +597,9 @@ document.querySelectorAll('[data-days]').forEach(b => b.addEventListener('click'
 $('formSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { F.form = b.dataset.form; apply(); } });
 $('fFrom').addEventListener('change', e => { F.from = e.target.value; document.querySelectorAll('[data-days]').forEach(b => b.classList.remove('on')); apply(); });
 $('fTo').addEventListener('change', e => { F.to = e.target.value; document.querySelectorAll('[data-days]').forEach(b => b.classList.remove('on')); apply(); });
-[['fBarn', 'barn'], ['fGroup', 'group'], ['fTreatment', 'treatment'], ['fBy', 'by']].forEach(([id, k]) => $(id).addEventListener('change', e => { F[k] = e.target.value; apply(); }));
+PICKS.forEach(([id, k]) => $(id).addEventListener('change', e => { F[k] = e.target.value; apply(); }));
 let qt; $('fQ').addEventListener('input', e => { clearTimeout(qt); qt = setTimeout(() => { F.q = e.target.value.trim(); apply(); }, 200); });
-$('clearBtn').addEventListener('click', () => { Object.assign(F, { form: 'all', barn: '', group: '', treatment: '', by: '', q: '' }); $('fQ').value = ''; setRange(90); });
+$('clearBtn').addEventListener('click', () => { Object.assign(F, { form: 'all', barn: '', group: '', treatment: '', type: '', category: '', by: '', q: '' }); $('fQ').value = ''; setRange(90); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => renderCharts());
 setInterval(() => { if (!demo && document.visibilityState === 'visible') load(true); }, 5 * 60 * 1000);
 load(false);
