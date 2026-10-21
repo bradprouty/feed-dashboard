@@ -184,7 +184,12 @@ const KNOWN = {
     type: 'Type', category: 'FDA_Category', animal: '', head: 'Group_Number_Head',
     qty: 'Treat_G_Qty', unit: 'Application_Unit', cost: 'Total_Treatment_Cost', by: '_enteredBy', lines: '',
   },
-  individual: {},
+  individual: {
+    date: 'I_Treat_Date', barn: 'Barn_Name', group: 'I_Treat_Group_ID', treatment: 'Treat_Name',
+    type: 'Type', category: 'FDA_Category', animal: '', head: 'Ind_Number_Head',
+    qty: 'Ind_Total_Doses', unit: 'Application_Unit', cost: 'Total_Treatment_Cost', by: '_enteredBy',
+    lines: 'Ind_Treatments',   // repeat section: one dashboard row per line
+  },
 };
 const DETECT = {
   date: [/treat.*date|date.*treat/i, /^date$/i, /date/i],
@@ -283,18 +288,24 @@ function buildRows() {
   ROWS = [];
   for (const form of Object.keys(FORMS)) {
     const m = MAP[form];
+    const lineOnly = new Set(FIELDS[form].line.filter(k => !FIELDS[form].parent.includes(k)));
     for (const raw of RAW[form]) {
       const lines = m.lines && Array.isArray(raw[m.lines]) && raw[m.lines].length ? raw[m.lines] : [null];
+      // Entry-level totals (e.g. cost) are split across lines by head count so sums don't double-count.
+      const headOnLine = m.head && lineOnly.has(m.head);
+      const totalHead = headOnLine ? lines.reduce((t, ln) => t + (num(ln?.[m.head]) || 0), 0) : 0;
+      const share = ln => lines.length < 2 ? 1 : (totalHead > 0 ? (num(ln[m.head]) || 0) / totalHead : 1 / lines.length);
       lines.forEach((ln, li) => {
         const src = ln ? { ...raw, ...ln } : raw;
         const g = k => k ? src[k] : null;
+        const split = k => { const v = num(g(k)); return v == null || !ln || lineOnly.has(k) ? v : Math.round(v * share(ln) * 100) / 100; };
         const d = toDate(g(m.date)) || toDate(raw._createTime) || toDate(raw._receiveTime);
         const row = {
           uid: form + ':' + raw._id + (ln ? '#' + li : ''), form, raw: src, d,
           date: d ? dayKey(d) : '',
           barn: str(g(m.barn)), group: str(g(m.group)), treatment: str(g(m.treatment)),
           type: str(g(m.type)), category: str(g(m.category)), animal: str(g(m.animal)),
-          head: num(g(m.head)), qty: num(g(m.qty)), unit: str(g(m.unit)), cost: num(g(m.cost)), by: str(g(m.by)),
+          head: num(g(m.head)), qty: split(m.qty), unit: str(g(m.unit)), cost: split(m.cost), by: str(g(m.by)),
         };
         row.search = Object.values(src).map(str).join(' ').toLowerCase();
         ROWS.push(row);
@@ -559,8 +570,14 @@ function demoData() {
   }
   for (let n = 0; n < 640; n++) {
     const a = Math.floor(rnd() * 120);
-    individual.push({ _id: 'i' + n, _createTime: iso(a), _enteredBy: pick(techs), Date: iso(a), Barn: pick(barns), GroupID: pick(groups),
-      Pen: String(1 + Math.floor(rnd() * 40)), Ear_Tag: String(10000 + Math.floor(rnd() * 9000)), Product: pick(meds), Reason: pick(reasons), Dose_cc: pick([1, 2, 3, 5]) });
+    const [nm, ty, cat, un, pr] = rnd() < .15 ? ['Castration', 'INJECT', 'Not Listed', 'ML', 0] : pick(drugs);
+    const lines = Array.from({ length: rnd() < .8 ? 1 : 2 }, () => {
+      const hd = 1 + Math.floor(rnd() * 6);
+      return { I_Treat_Group_ID: pick(groups), Ind_Number_Head: hd, I_Treat_Date: iso(a), Ind_Total_Doses: pr ? hd * (1 + Math.floor(rnd() * 3)) : 0 };
+    });
+    const doses = lines.reduce((t, l) => t + l.Ind_Total_Doses, 0);
+    individual.push({ _id: 'i' + n, _createTime: iso(a), Date: iso(a), Barn_Name: pick(barns), Treat_Name: nm, Type: ty, FDA_Category: cat,
+      Application_Unit: un, Total_Treatment_Cost: Math.round(doses * pr * 100) / 100, Ind_Treatments: lines });
   }
   return { group, individual };
 }
