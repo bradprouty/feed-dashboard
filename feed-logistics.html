@@ -227,7 +227,7 @@ async function loadAll() {
 // Sales are entered in doForms the day the pigs ship, so Current_Inventory is today's head count.
 // api/inventory-data also keeps a timestamped history of every change, which gives the head count
 // on each past day. Feed per day = (feed per head per day) x (head that day), so a sale lowers the
-// forecast at once instead of waiting for the 7-day average to catch up.
+// forecast at once instead of waiting for the average to catch up. The scale rate uses the last 3 complete days, so it follows a sale or a change in eating quickly.
 const normS = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
 const wordsOf = (s) => new Set(String(s == null ? '' : s).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
 function matchInventory(d, locName) {
@@ -250,7 +250,7 @@ function matchInventory(d, locName) {
     const put = (g, r, share, shared) => {
       claimed.add(String(g.location_i));
       if (r.Current_Inventory == null) { out.noCount.push(locName[String(g.location_i)] || g.location_i); return; }
-      out.byLoc[String(g.location_i)] = { key: r.key, rec: r, share, shared, now: r.Current_Inventory * share, fox: g };
+      out.byLoc[String(g.location_i)] = { key: r.key, rec: r, loc: String(g.location_i), share, shared, now: r.Current_Inventory * share, fox: g };
     };
     if (recs.length === 1 && gs.length > 1) {                       // one record covers several FoxPro groups (Raak): split by FoxPro head count
       const tot = gs.reduce((x, g) => x + (Number(g.head_count) || 0), 0) || gs.length;
@@ -267,12 +267,23 @@ function matchInventory(d, locName) {
   for (const g of groups) if (!claimed.has(String(g.location_i))) out.unmatchedGroups.push((locName[String(g.location_i)] || 'Location ' + g.location_i) + ' [' + (g.aux_id || g.group_id) + ']');
   return out;
 }
-// head count in a barn at time t, from the recorded changes (before the first record: assume it was the first value seen)
+// Sales that happened before the head-count history began (the history only starts when the page first saw a doForms
+// snapshot, so older days would otherwise be divided by today's smaller head count). Entered by hand: { location id: [[date, head sold], ...] }.
+// Each sale is only added back to days before the history starts, and only if it happened before then (later sales are in the history already).
+// Raak South 47 head on 10/7 and 165 on 10/12, Raak North 165 on 10/12 (per Brad, Oct 21 2026).
+const HEAD_SALES = { '102': [['2026-10-07', 47], ['2026-10-12', 165]], '101': [['2026-10-12', 165]] };
+// head count in a barn at time t, from the recorded changes (before the first record: the first value seen, plus any HEAD_SALES that happened after t)
 function headAt(invMap, m, t) {
-  let v = null, first = null;
-  for (const e of invMap.history) { const n = e.changes[m.key]; if (n == null) continue; if (first == null) first = n; if (e.t <= t) v = n; else break; }
-  if (v == null) v = first != null ? first : m.rec.Current_Inventory;
-  return v * m.share;
+  let v = null, first = null, firstT = null;
+  for (const e of invMap.history) { const n = e.changes[m.key]; if (n == null) continue; if (first == null) { first = n; firstT = e.t; } if (e.t <= t) v = n; else break; }
+  let head;
+  if (v == null) {
+    head = (first != null ? first : m.rec.Current_Inventory) * m.share;
+    const sales = HEAD_SALES[m.loc] || [];
+    const hist0 = firstT != null ? firstT : Date.now();
+    for (const [day, n] of sales) { const st = Date.parse(day + 'T12:00:00Z'); if (st > t && st <= hist0) head += n; }
+  } else head = v * m.share;
+  return head;
 }
 
 /* ------------------------------------------------- BarnTools pound correction */
@@ -381,7 +392,7 @@ function buildModel(d) {
       const last7 = days(0, 6), recent3 = days(0, 2), base = days(3, 16);
       const spark = []; for (let i = 6; i >= 0; i--) spark.push(at(i) == null ? 0 : at(i));
       row.cons = {
-        lastComplete, rate7: mean(last7), recent3: mean(recent3), baseMean: mean(base), baseSd: sd(base), baseN: base.length,
+        lastComplete, rate7: mean(last7), rate3: mean(recent3), recent3: mean(recent3), baseMean: mean(base), baseSd: sd(base), baseN: base.length,
         yesterday: at(0), spark, at, first,
       };
     }
@@ -410,13 +421,13 @@ function buildModel(d) {
 
     // ---- rate used for forecasting
     let rate = null, rateSrc = null;
-    if (row.cons && row.cons.rate7 != null) { rate = row.cons.rate7; rateSrc = 'scale 7-day avg'; }
+    if (row.cons && row.cons.rate3 != null) { rate = row.cons.rate3; rateSrc = 'scale 3-day avg'; }
     else if (row.millRate > 0) { rate = row.millRate; rateSrc = 'mill deliveries 28-day avg'; }
     row.rateRaw = rate;
     if (row.inv && row.inv.headNow != null) {
       const m = row.inv;
-      if (row.cons && row.cons.rate7 != null && m.ph7 != null) { rate = m.ph7 * m.headNow; rateSrc = 'per-head rate × ' + fmt(m.headNow) + ' head'; }
-      else if (!(row.cons && row.cons.rate7 != null) && row.millRate > 0) {
+      if (row.cons && row.cons.rate3 != null && m.ph3 != null) { rate = m.ph3 * m.headNow; rateSrc = '3-day per-head rate × ' + fmt(m.headNow) + ' head'; }
+      else if (!(row.cons && row.cons.rate3 != null) && row.millRate > 0) {
         let hs = 0; for (let i = 1; i <= 28; i++) hs += m.headDay(addDays(todayKey, -i));
         const avg = hs / 28;
         if (avg > 0) { rate = row.millRate * m.headNow / avg; rateSrc = 'mill 28-day avg × head change'; }
@@ -1221,7 +1232,7 @@ function renderLevels() {
       <tr class="bindet"${S.open[lk] ? '' : ' hidden'}><td colspan="11">${binDetail(r, null)}</td></tr>`;
   }
   el.innerHTML = h + '</tbody></table></div>' +
-    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = last 7 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. The <b>lb/head</b> line is that rate divided by the doForms head count (Normal and Last 3d show their own per-head figures). A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
+    `<div class="note small muted">Click a row to see its individual bins. The graph shows the last 7 complete days of consumption; “Charts ›” opens larger charts for that barn. <b>Normal</b> = average lb/day over the 14 days before the last 3. <b>Eats / day</b> = average of the last 3 complete days from the bin scales, or mill deliveries ÷ 28 days where there is no scale feed. The <b>lb/head</b> line is that rate divided by the doForms head count (Normal and Last 3d show their own per-head figures). A level shown as a range is estimated: the low end assumes the bin was empty 28 days ago, the high end that it was full.</div>`;
   bindExpand(el); bindSort(el, 'levels');
   el.querySelectorAll('a.clink').forEach((a) => a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openChart(a.dataset.loc); });
 }
