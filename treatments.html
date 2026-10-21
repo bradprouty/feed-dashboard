@@ -179,7 +179,7 @@ details.mapping summary{cursor:pointer;padding:12px 14px;font-weight:600;font-si
 
 <script>
 (() => {
-const API = '/api/treatments';
+const API = 'https://doforms-backend.vercel.app/api/treatments';   // Vercel backend; this page is hosted on GitHub Pages
 const FORMS = { group: 'Group Treatments', individual: 'Individual Treatments' };
 const ROLES = [
   { id: 'date', label: 'Date' }, { id: 'barn', label: 'Barn' }, { id: 'group', label: 'Group' },
@@ -614,7 +614,7 @@ async function load(isRefresh) {
     for (const form of Object.keys(FORMS)) META[form] = { lastSync: new Date().toISOString(), lastResult: {} };
   }
   $('banner').innerHTML = demo
-    ? `<div class="banner"><b>Showing sample data.</b> ${force ? 'Remove <code>?demo=1</code> from the address to see live records.' : `Couldn't reach ${API} (${esc(reason)}). This page needs to run on the same Vercel site as the API.`}</div>`
+    ? `<div class="banner"><b>Showing sample data.</b> ${force ? 'Remove <code>?demo=1</code> from the address to see live records.' : `Couldn't reach ${API} (${esc(reason)}). Check that the latest api/treatments.js is deployed on Vercel.`}</div>`
     : '';
   setupMapping(); renderMapping(); buildRows(); renderStatus();
   if (!demo && Object.values(META).some(m => (m.lastResult?.remaining || 0) > 0 || !m.lastSync)) $('loader').open = true;
