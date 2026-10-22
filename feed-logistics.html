@@ -519,6 +519,12 @@ function currentLevel(loc, d, v, row, cl, cap) {
   } else if (ap && Object.keys(ap).length) {
     const dk = Object.keys(ap).sort().pop();
     measured = { lbs: ap[dk], raw: ap[dk], asOf: ctToEpoch(dk + 'T12:00:00'), src: 'AP (daily)', daily: true };
+    // the AP report lists every bin (A, B, C, D) separately; use them when this day has a reading for each bin of the barn
+    const apb = d.ap.levelByBin && d.ap.levelByBin[loc];
+    if (apb) {
+      const letters = Object.keys(apb).sort();
+      if (letters.length && letters.every((b) => apb[b][dk] != null)) measured.bins = letters.map((b) => ({ label: 'AP bin ' + b, lbs: apb[b][dk], t: new Date(measured.asOf).toISOString() }));
+    }
   }
   const rate = row.rate || 0;
   if (measured) {
@@ -626,11 +632,18 @@ function eventsFor(loc, d) {
   const ap = d.ap;
   if (ap && ap.levelByLocation && ap.levelByLocation[loc]) {
     const lv = ap.levelByLocation[loc], cs = (ap.byLocation && ap.byLocation[loc]) || {};
+    const lb = (ap.levelByBin && ap.levelByBin[loc]) || null, cb = (ap.byBin && ap.byBin[loc]) || {};
+    const letters = lb ? Object.keys(lb).sort() : [];
     const keys = Object.keys(lv).sort(), ev = [];
     for (let i = 1; i < keys.length; i++) {
       if (addDays(keys[i - 1], 1) !== keys[i]) continue;
-      const lbs = lv[keys[i]] - lv[keys[i - 1]] + (cs[keys[i]] || 0);
-      if (lbs >= AP_INFER_MIN_LBS) ev.push({ t: ctToEpoch(keys[i] + 'T12:00:00'), lbs: Math.round(lbs), daily: true, date: keys[i] });
+      const a = keys[i - 1], b = keys[i];
+      let lbs;
+      if (letters.length && letters.every((x) => lb[x][a] != null && lb[x][b] != null)) {
+        // the report gives each bin its own level and consumption, so look for a fill bin by bin (a fill in one bin is not hidden by the other bin eating)
+        lbs = 0; for (const x of letters) { const f = lb[x][b] - lb[x][a] + ((cb[x] && cb[x][b]) || 0); if (f >= AP_INFER_MIN_LBS) lbs += f; }
+      } else lbs = lv[b] - lv[a] + (cs[b] || 0);        // days before per-bin history was kept: barn total only
+      if (lbs >= AP_INFER_MIN_LBS) ev.push({ t: ctToEpoch(b + 'T12:00:00'), lbs: Math.round(lbs), daily: true, date: b });
     }
     return { src: 'AP (daily)', daily: true, syncAt: Date.parse(ap.updatedAt), from: keys.length ? ctToEpoch(addDays(keys[0], 1) + 'T00:00:00') : null, ev };
   }
@@ -1097,7 +1110,7 @@ function binDetail0(r, p) {
   const sensed = lv && lv.measured && lv.bins && lv.bins.length ? lv.bins : null;
   if (!sensed) {
     const list = r.foxBins.length ? r.foxBins.map((b) => `${esc(b.name)} (${fmt(b.cap)} lb)`).join(', ') : 'no bins on file';
-    return `<div class="small muted">No per-bin sensor readings for this barn${r.vendor ? ' (the ' + esc(VENDORS[r.vendor]) + ' feed only gives a barn total here)' : ''}, so the bins can't be told apart. Bins on file: ${list}. The delivery is sized from the barn total${lv ? ' (' + fmt(lv.lbs) + (lv.hi ? '–' + fmt(lv.hi) : '') + ' lb now)' : ''}.</div>`;
+    return `<div class="small muted">No per-bin sensor readings for this barn${r.vendor ? ' (' + (r.vendor === 'ap' ? 'the AP report has them by bin, but this copy of the data only has the barn total so far; per-bin levels appear after the next AP sync' : 'the ' + esc(VENDORS[r.vendor]) + ' feed only gives a barn total here') + ')' : ''}, so the bins can't be told apart. Bins on file: ${list}. The delivery is sized from the barn total${lv ? ' (' + fmt(lv.lbs) + (lv.hi ? '–' + fmt(lv.hi) : '') + ' lb now)' : ''}.</div>`;
   }
   const n = sensed.length;
   const caps = r.binCaps || [];
@@ -1125,7 +1138,7 @@ function binDetail0(r, p) {
       ${showSplit ? `<td class="n"><b>${b.need > 0 ? fmt(Math.round(p.lbs * b.need / needSum / 100) * 100) + ' lb' : '—'}</b></td>` : ''}</tr>`;
   }
   h += '</tbody></table>';
-  h += `<div class="small muted">${ownCaps ? `${rows.every((x) => Math.abs(x.cap - rows[0].cap) < 0.05 * rows[0].cap) ? `Each bin holds about ${fmt(Math.round(rows[0].cap / 100) * 100)} lb (${r.btScale ? 'FoxPro size; BarnTools pounds scaled to match' : 'from the sensors'}). ` : `Bin sizes from the sensors: ${rows.map((x) => fmt(Math.round(x.cap / 100) * 100)).join(', ')} lb. `}` : perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived (split equally, since the vendors report consumption per barn, not per bin).${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
+  h += `<div class="small muted">${ownCaps ? `${rows.every((x) => Math.abs(x.cap - rows[0].cap) < 0.05 * rows[0].cap) ? `Each bin holds about ${fmt(Math.round(rows[0].cap / 100) * 100)} lb (${r.btScale ? 'FoxPro size; BarnTools pounds scaled to match' : 'from the sensors'}). ` : `Bin sizes from the sensors: ${rows.map((x) => fmt(Math.round(x.cap / 100) * 100)).join(', ')} lb. `}` : perCap ? `Each bin holds about ${fmt(perCap)} lb. ` : 'Bin sizes differ here, so % full is not shown. '}“Last reading” is the sensor value; “Est. now” rolls it forward with the barn's eating and any ticket that has since arrived ${r.vendor === 'ap' ? '(AP gives each bin its own level, once a day; the roll-forward uses the barn\'s eating spread in proportion to each bin\'s level).' : '(split equally, since the vendors report consumption per barn, not per bin).'}${showSplit ? ` “Put in this bin” divides the ${fmt(p.lbs)} lb delivery in proportion to how far each bin is below ${S.fillPct}% full.` : ''}</div>`;
   return h;
 }
 function bindExpand(el) {
