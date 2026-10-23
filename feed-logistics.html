@@ -102,6 +102,7 @@
     <button class="tab" data-p="levels">Bin levels &amp; consumption</button>
     <button class="tab" data-p="charts">Charts</button>
     <button class="tab" data-p="recon">Batch vs delivery</button>
+    <button class="tab" data-p="batches">Batch history</button>
     <button class="tab" data-p="mis">Misdelivery check</button>
     <button class="tab" data-p="notes">Data notes</button>
   </div>
@@ -110,6 +111,7 @@
   <div class="panel" id="p-levels"></div>
   <div class="panel" id="p-charts"></div>
   <div class="panel" id="p-recon"></div>
+  <div class="panel" id="p-batches"></div>
   <div class="panel" id="p-mis"></div>
   <div class="panel" id="p-notes"></div>
 </div>
@@ -201,8 +203,8 @@ async function getJson(url, opts) {
   if (!r.ok) throw new Error(`${r.status} ${url.split('?')[0]}`);
   return r.json();
 }
-function sb(path) {
-  return getJson(`${SB_URL}/${path}`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Accept-Profile': 'foxpro_mirror' } });
+function sb(path, profile) {
+  return getJson(`${SB_URL}/${path}`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Accept-Profile': profile || 'foxpro_mirror' } });
 }
 async function loadAll() {
   const since = addDays(ctKey(Date.now()), -75);
@@ -1034,6 +1036,7 @@ function render() {
   renderLevels();
   renderCharts();
   renderRecon();
+  renderBatches();
   renderMis();
   renderNotes();
 }
@@ -1512,6 +1515,205 @@ function renderMis() {
   el.innerHTML = h;
 }
 
+/* ------------------------------------------------------------ batch history (batching system, schema batcher_mirror) */
+// What the mill mixed and where it was sent. Source: the batching system's own history (batcher_mirror), read only when this tab is opened.
+// Pounds batched come from the mill's FoxPro ticket (it equals the sum of every ingredient weighed, checked ticket by ticket); the ordered amount, recipe,
+// load-out, batch counts and rejects come from the batching system. Delivery status is looked up from the "Batch vs delivery" check by ticket number.
+const BH = { key: null, at: 0, raw: null, err: null, loading: false, tok: 0, lookups: null };
+S.bh = { range: 'today', from: null, to: null, barn: 'all', recipe: 'all', q: '' };
+S.sort.bh = null;
+const BH_MAX_DAYS = 120;
+function bhRange() {
+  const t = ctKey(NOW), r = S.bh.range;
+  if (r === 'yday') return [addDays(t, -1), addDays(t, -1), 'Yesterday'];
+  if (r === 'd7') return [addDays(t, -6), t, 'Last 7 days'];
+  if (r === 'd30') return [addDays(t, -29), t, 'Last 30 days'];
+  if (r === 'custom') {
+    let a = S.bh.from || addDays(t, -6), b = S.bh.to || t;
+    if (a > b) [a, b] = [b, a];
+    if (Date.parse(b) - Date.parse(a) > BH_MAX_DAYS * DAY) a = addDays(b, -BH_MAX_DAYS);
+    return [a, b, 'Custom'];
+  }
+  return [t, t, 'Today'];
+}
+function bsb(path) { return getJson(`${SB_URL}/${path}`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Accept-Profile': 'batcher_mirror' } }); }
+async function bsbAll(path) {
+  const out = [];
+  for (let off = 0; ; off += 1000) { const r = await bsb(`${path}&limit=1000&offset=${off}`); out.push(...r); if (r.length < 1000) break; }
+  return out;
+}
+const chunks = (a, n) => { const o = []; for (let i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; };
+async function bhLookups() {
+  if (BH.lookups) return BH.lookups;
+  const [f, e] = await Promise.all([bsb('formula?select=frm_id,frm_descri&limit=1000'), bsb('equipment?select=eqp_id,eqp_descri&limit=1000').catch(() => [])]);
+  BH.lookups = { formula: Object.fromEntries(f.map((x) => [x.frm_id, x.frm_descri])), equip: Object.fromEntries(e.map((x) => [x.eqp_id, x.eqp_descri])) };
+  return BH.lookups;
+}
+async function fetchBatchHistory(k0, k1) {
+  const lo = `${k0}T00:00:00`, hi = `${addDays(k1, 1)}T00:00:00`;
+  const sel = 'ord_id,ord_fmm_or,frm_id,ord_destin,ord_locati,ord_locat2,ord_group2,ord_amount,ord_starte,ord_comple,ord_ext_bi,ord_taken,ord_hold';
+  const wantOpen = k1 >= ctKey(NOW);
+  const [orders, open, lk] = await Promise.all([
+    bsbAll(`order_hst?select=${sel}&ord_comple=gte.${lo}&ord_comple=lt.${hi}&order=ord_comple.asc`),
+    wantOpen ? bsb(`order?select=${sel}&order=ord_taken.asc&limit=200`) : Promise.resolve([]),
+    bhLookups(),
+  ]);
+  const ids = orders.map((o) => o.ord_id);
+  const bats = (await Promise.all(chunks(ids, 60).map((c) => bsb(`batch_hst?select=ord_id,bat_number,bat_start_,bat_stop_t,bat_size,bat_reject,bat_flush&ord_id=in.(${c.join(',')})&limit=1000`)))).flat();
+  // batched pounds: from the page's own 75-day ticket list, else fetched for the tickets that are missing
+  const have = new Set((D.tickets || []).map((t) => String(t.ticket_num)));
+  const missing = [...new Set(orders.map((o) => o.ord_fmm_or).filter((n) => n && /^\d+$/.test(n) && !have.has(String(n))))];
+  const extra = missing.length ? (await Promise.all(chunks(missing, 100).map((c) => sb(`batch_history?select=ticket_num,actual_amo&ticket_num=in.(${c.join(',')})&limit=1000`)))).flat() : [];
+  return { orders, open: open.filter((o) => !o.ord_comple && !ids.includes(o.ord_id)), bats, extra, lk, fetchedAt: Date.now() };
+}
+function ensureBatches(force) {
+  if (!D) return;
+  const [k0, k1] = bhRange(), key = k0 + '|' + k1;
+  const stale = BH.raw && k1 >= ctKey(NOW) && Date.now() - BH.at > AUTO_MS;
+  if (BH.loading && BH.key === key && !force) return;
+  if (!force && BH.key === key && BH.raw && !stale) return;
+  const tok = ++BH.tok, keep = BH.key === key ? BH.raw : null;
+  BH.key = key; BH.loading = true; BH.err = null; if (!keep) BH.raw = null;
+  fetchBatchHistory(k0, k1).then((raw) => { if (tok !== BH.tok) return; BH.raw = raw; BH.at = Date.now(); BH.loading = false; renderBatches(); })
+    .catch((e) => { if (tok !== BH.tok) return; BH.err = String(e.message || e); BH.loading = false; if (!keep) BH.raw = null; renderBatches(); });
+}
+const titleCase = (s) => String(s || '').toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+const sgnPct = (v, d) => { const x = +v.toFixed(d); return (x > 0 ? '+' : '') + x.toFixed(d) + '%'; };
+function fmtDur(min) { if (min == null || !isFinite(min)) return '—'; if (min < 60) return Math.round(min) + ' min'; const h = Math.floor(min / 60); return h + ' h ' + String(Math.round(min - h * 60)).padStart(2, '0') + ' min'; }
+function buildBH(raw) {
+  const lk = raw.lk;
+  const fox = new Map((D.tickets || []).map((t) => [String(t.ticket_num), Number(t.actual_amo)]));
+  for (const t of raw.extra || []) fox.set(String(t.ticket_num), Number(t.actual_amo));
+  const bats = {};
+  for (const b of raw.bats) (bats[b.ord_id] = bats[b.ord_id] || []).push(b);
+  const recon = new Map();
+  for (const r of (M && M.recon ? M.recon.rows : [])) for (const n of r.tickets) recon.set(String(n), r);
+  const barnName = (o) => { const r = M && M.L.find((x) => x.loc === String(o.ord_locati)); return r ? r.name : titleCase(o.ord_locat2) || 'Location ' + o.ord_locati; };
+  const tracked = (o) => !!(M && M.L.some((x) => x.loc === String(o.ord_locati)));
+  const rows = raw.orders.map((o) => {
+    const bs = (bats[o.ord_id] || []).sort((a, b) => a.bat_number - b.bat_number);
+    const stop = ctToEpoch(o.ord_comple), start = o.ord_starte ? ctToEpoch(o.ord_starte) : null;
+    const ordered = Number(o.ord_amount) || 0, fb = fox.get(String(o.ord_fmm_or));
+    const batched = fb != null && isFinite(fb) && fb > 0 ? fb : null;
+    const rc = recon.get(String(o.ord_fmm_or));
+    let dv;
+    if (rc) dv = { sev: rc.sev, text: rc.status, tip: `Mill ${fmt(rc.mill)} lb, bin gained ${rc.detected == null ? '—' : fmt(rc.detected)} lb${rc.tickets.length > 1 ? '; one truck trip with tickets #' + rc.tickets.join(', #') : ''}`, rank: REC_RANK[rc.sev] == null ? 9 : REC_RANK[rc.sev], rc };
+    else if (!tracked(o)) dv = { sev: 'mute', text: 'Barn not tracked', tip: 'This location has no bin data in the dashboard, so delivery is not checked.', rank: 5 };
+    else dv = { sev: 'mute', text: 'Not checked yet', tip: batched == null ? 'The mill ticket is not in the FoxPro mirror yet.' : 'This ticket is not in the delivery check (too old, or not synced yet).', rank: 6 };
+    return { ord: o.ord_id, ticket: o.ord_fmm_or, loc: String(o.ord_locati), barn: barnName(o), group: o.ord_group2 || '', bin: o.ord_ext_bi || '',
+      fid: o.frm_id, recipe: lk.formula[o.frm_id] || ('Formula ' + o.frm_id), lo: lk.equip[o.ord_destin] || '', ordered, batched, stop, start, day: String(o.ord_comple).slice(0, 10),
+      diffPct: batched != null && ordered ? (batched - ordered) / ordered * 100 : null, nb: bs.length, rej: bs.filter((b) => b.bat_reject).length,
+      el: start != null && isFinite(start) && isFinite(stop) ? (stop - start) / 60000 : null, dv };
+  });
+  const queue = raw.open.map((o) => ({ ticket: o.ord_fmm_or, barn: barnName(o), group: o.ord_group2 || '', recipe: lk.formula[o.frm_id] || ('Formula ' + o.frm_id), fid: o.frm_id,
+    ordered: Number(o.ord_amount) || 0, taken: o.ord_taken ? ctToEpoch(o.ord_taken) : null, started: !!o.ord_starte, hold: !!o.ord_hold, loc: String(o.ord_locati) }));
+  return { rows, queue };
+}
+function bhSummary(rows, keyf, labf) {
+  const m = new Map();
+  for (const r of rows) {
+    const k = keyf(r);
+    const a = m.get(k) || { k, label: labf(r), n: 0, lbs: 0, ord: 0, nb: 0, rej: 0, bad: 0, ok: 0 };
+    a.n++; a.lbs += r.batched || 0; if (r.batched != null) a.nbat = (a.nbat || 0) + 1; if (r.batched != null) a.ord += r.ordered; a.nb += r.nb; a.rej += r.rej;
+    if (r.dv.sev === 'bad') a.bad++; else if (r.dv.sev === 'ok') a.ok++;
+    m.set(k, a);
+  }
+  return [...m.values()];
+}
+function renderBatches() {
+  const el = document.getElementById('p-batches');
+  if (!el) return;
+  const [k0, k1, lab] = bhRange();
+  const chips = [['today', 'Today'], ['yday', 'Yesterday'], ['d7', 'Last 7 days'], ['d30', 'Last 30 days'], ['custom', 'Custom']]
+    .map(([id, t]) => `<button class="chip${S.bh.range === id ? ' on' : ''}" data-bhr="${id}">${t}</button>`).join('');
+  const custom = S.bh.range === 'custom' ? `<input type="date" id="bhFrom" value="${k0}" max="${ctKey(NOW)}"> <span class="muted">to</span> <input type="date" id="bhTo" value="${k1}" max="${ctKey(NOW)}">` : '';
+  const head = `<div class="bar">${chips}${custom}<span class="muted small" style="margin-left:6px">${k0 === k1 ? esc(fmtDay(k0)) : esc(fmtDay(k0)) + ' – ' + esc(fmtDay(k1))}</span><span class="grow"></span>${BH.loading ? '<span class="muted small">Loading…</span>' : ''}</div>`;
+  const bind = () => {
+    el.querySelectorAll('[data-bhr]').forEach((b) => b.onclick = () => { S.bh.range = b.dataset.bhr; if (S.bh.range === 'custom' && !S.bh.from) { S.bh.from = k0; S.bh.to = k1; } ensureBatches(); renderBatches(); });
+    const f = el.querySelector('#bhFrom'), t = el.querySelector('#bhTo');
+    if (f) f.onchange = () => { if (f.value) { S.bh.from = f.value; ensureBatches(); renderBatches(); } };
+    if (t) t.onchange = () => { if (t.value) { S.bh.to = t.value; ensureBatches(); renderBatches(); } };
+  };
+  if (BH.err && !BH.raw) {
+    const expose = /^(406|404|401|403)/.test(BH.err);
+    el.innerHTML = head + `<div class="err">${expose ? 'The batching-system data is not reachable yet. In Supabase, open Project Settings → API (Data API) and add <b>batcher_mirror</b> to "Exposed schemas", then reload this page.' : 'Could not load the batching history.'} <span class="small">(${esc(BH.err)})</span></div>`;
+    bind(); return;
+  }
+  if (!BH.raw) { el.innerHTML = head + `<div class="note">${BH.loading ? 'Loading the batching history…' : 'Open this tab to load the batching history.'}</div>`; bind(); return; }
+  const { rows: all, queue } = buildBH(BH.raw);
+  // filters
+  const barns = new Map(), recs = new Map();
+  for (const r of all) { barns.set(r.loc, r.barn); recs.set(r.fid, r.recipe); }
+  if (S.bh.barn !== 'all' && !barns.has(S.bh.barn)) S.bh.barn = 'all';
+  if (S.bh.recipe !== 'all' && !recs.has(S.bh.recipe)) S.bh.recipe = 'all';
+  const q = S.bh.q.trim().toLowerCase();
+  const rows = all.filter((r) => (S.bh.barn === 'all' || r.loc === S.bh.barn) && (S.bh.recipe === 'all' || r.fid === S.bh.recipe) &&
+    (!q || String(r.ticket).toLowerCase().includes(q) || r.barn.toLowerCase().includes(q) || r.group.toLowerCase().includes(q) || r.recipe.toLowerCase().includes(q)));
+  const opt = (m, cur) => '<option value="all">All</option>' + [...m.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]))).map(([k, v]) => `<option value="${esc(k)}"${k === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  const filt = `<div class="bar small"><span class="muted">Barn</span><select id="bhBarn">${opt(barns, S.bh.barn)}</select><span class="muted">Recipe</span><select id="bhRec">${opt(recs, S.bh.recipe)}</select>
+    <input type="search" id="bhQ" placeholder="Search ticket, barn, group…" value="${esc(S.bh.q)}" style="font:inherit;padding:5px 9px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);min-width:210px"></div>`;
+  // totals
+  const withB = rows.filter((r) => r.batched != null);
+  const lbs = withB.reduce((x, r) => x + r.batched, 0), ord = withB.reduce((x, r) => x + r.ordered, 0);
+  const nb = rows.reduce((x, r) => x + r.nb, 0), rej = rows.reduce((x, r) => x + r.rej, 0);
+  const issues = rows.filter((r) => r.dv.sev === 'bad').length;
+  const qShown = queue.filter((x) => S.bh.barn === 'all' || x.loc === S.bh.barn).filter((x) => S.bh.recipe === 'all' || x.fid === S.bh.recipe);
+  const accPct = ord ? (lbs - ord) / ord * 100 : null;
+  let h = head + filt + `<div class="kpis">${kpi(fmt(rows.length), `ticket${rows.length === 1 ? '' : 's'} mixed`, '')}${kpi(fmt(lbs), 'lb batched', '')}` +
+    kpi(accPct == null ? '—' : sgnPct(accPct, 2), 'batched vs ordered', accPct != null && Math.abs(accPct) > 2 ? 'warn' : '') +
+    kpi(fmt(nb), `batches · ${nb ? fmt(lbs / Math.max(1, withB.reduce((x, r) => x + r.nb, 0))) : '—'} lb average`, '') +
+    kpi(rej, 'rejected batches', rej ? 'warn' : '') + kpi(issues, 'delivery discrepancies', issues ? 'bad' : '') +
+    (k1 >= ctKey(NOW) ? kpi(qShown.length, 'orders queued or mixing', '') : '') + '</div>';
+  if (BH.err) h += `<div class="err">Refresh failed, showing the last loaded data. <span class="small">(${esc(BH.err)})</span></div>`;
+  // queue
+  if (k1 >= ctKey(NOW) && qShown.length) {
+    h += `<div class="cardc"><h3>Queued and in progress</h3><div class="tw"><table><thead><tr><th>Ticket</th><th>Barn</th><th>Recipe</th><th class="n">Ordered lb</th><th>Entered</th><th>Status</th></tr></thead><tbody>` +
+      qShown.map((x) => `<tr><td>#${esc(x.ticket)}</td><td><b>${esc(x.barn)}</b>${x.group ? ` <span class="muted small">${esc(x.group)}</span>` : ''}</td><td>${esc(x.recipe)}</td><td class="n">${fmt(x.ordered)}</td><td>${x.taken ? esc(fmtTime(x.taken)) : '—'}</td><td>${pill(x.started ? 'info' : 'mute', x.started ? 'Mixing now' : x.hold ? 'Queued (on hold)' : 'Queued')}</td></tr>`).join('') +
+      `</tbody></table></div></div>`;
+  }
+  if (!rows.length) {
+    h += `<div class="note">${all.length ? 'Nothing matches those filters.' : (k0 === k1 ? 'No tickets were completed ' + (lab === 'Today' ? 'yet today' : 'on this day') + '.' : 'No tickets were completed in this range.')}</div>`;
+  } else {
+    // summaries
+    const mx = (a, f) => Math.max(1, ...a.map(f));
+    const sumTable = (title, list, extra) => {
+      const m = mx(list, (a) => a.lbs);
+      return `<div class="cardc"><h3>${title}</h3><div class="tw"><table><thead><tr><th>${extra.head}</th><th class="n">Tickets</th><th class="n">Lb batched</th><th></th><th class="n">Batches</th><th class="n">Rejects</th><th>Delivery</th></tr></thead><tbody>` +
+        list.map((a) => `<tr><td>${a.label}</td><td class="n">${a.n}</td><td class="n">${a.nbat ? fmt(a.lbs) : '—'}</td><td><span class="meter sm"><i style="width:${(a.lbs / m * 100).toFixed(0)}%;background:var(--accent)"></i></span></td><td class="n">${a.nb}</td><td class="n">${a.rej || '—'}</td><td class="small">${a.bad ? pill('bad', a.bad + ' discrepanc' + (a.bad === 1 ? 'y' : 'ies')) + ' ' : ''}${a.ok ? pill('ok', a.ok + ' matched') : ''}${!a.bad && !a.ok ? '<span class="muted">—</span>' : ''}</td></tr>`).join('') +
+        '</tbody></table></div></div>';
+    };
+    const byBarn = bhSummary(rows, (r) => r.loc, (r) => `<b>${esc(r.barn)}</b>`).sort((a, b) => b.lbs - a.lbs);
+    const byRec = bhSummary(rows, (r) => r.fid, (r) => esc(r.recipe)).sort((a, b) => b.lbs - a.lbs);
+    let sums = '';
+    if (k0 !== k1) {
+      const byDay = bhSummary(rows, (r) => r.day, (r) => esc(fmtDay(r.day))).sort((a, b) => b.k.localeCompare(a.k));
+      sums += sumTable('By day', byDay, { head: 'Day' });
+    }
+    sums += sumTable('By barn', byBarn, { head: 'Barn' }) + sumTable('By recipe', byRec, { head: 'Recipe' });
+    // ticket list
+    const RK = { stop: (r) => r.stop, ticket: (r) => Number(r.ticket), barn: (r) => r.barn, recipe: (r) => r.recipe, lo: (r) => r.lo || null, ord: (r) => r.ordered,
+      act: (r) => r.batched, diff: (r) => r.diffPct, nb: (r) => r.nb, el: (r) => r.el, dv: (r) => r.dv.rank };
+    const T = (k, l, c) => sortTh('bh', k, l, c);
+    let t = `<div class="tw"><table><thead><tr>${T('stop', 'Finished')}${T('ticket', 'Ticket')}${T('barn', 'Sent to')}${T('recipe', 'Recipe')}${T('lo', 'Load-out')}${T('ord', 'Ordered lb', 'n')}${T('act', 'Batched lb', 'n')}${T('diff', 'Diff', 'n')}${T('nb', 'Batches', 'n')}${T('el', 'Elapsed', 'n')}${T('dv', 'Delivery')}</tr></thead><tbody>`;
+    for (const r of sortRows('bh', rows, RK, (a) => a.slice().sort((x, y) => y.stop - x.stop))) {
+      const dc = r.diffPct == null ? '—' : sgnPct(r.diffPct, 1);
+      t += `<tr><td>${esc(fmtTime(r.stop))}</td><td>#${esc(r.ticket)}</td><td><b>${esc(r.barn)}</b><div class="muted small">${esc([r.group, r.bin].filter(Boolean).join(' · '))}</div></td><td>${esc(r.recipe)}</td><td>${esc(r.lo) || '—'}</td>
+        <td class="n">${fmt(r.ordered)}</td><td class="n">${r.batched == null ? '—' : fmt(r.batched)}</td><td class="n">${r.diffPct != null && Math.abs(r.diffPct) > 2 ? pill('warn', dc) : dc}</td>
+        <td class="n">${r.nb || '—'}${r.rej ? ' ' + pill('warn', r.rej + ' rejected') : ''}</td><td class="n">${fmtDur(r.el)}</td><td>${pill(r.dv.sev, r.dv.text, r.dv.tip)}</td></tr>`;
+    }
+    t += '</tbody></table></div>';
+    h += `<div class="cardc"><h3>Tickets · ${rows.length}</h3>${t}</div>` + sums;
+  }
+  h += `<div class="note small muted"><b>How to read this.</b> Tickets are listed when the batching system marks them complete. "Batched" is the pounds the mill actually weighed (the FoxPro ticket, which equals the sum of every ingredient in the batching system); "Ordered" is what was asked for, and a difference over 2% is highlighted. "Elapsed" runs from the first batch starting to the order closing, so it includes any wait for the truck at the load-out when the last batch is held. "Delivery" is the result from the Batch vs delivery tab for that ticket (mill pounds against what the bin sensor saw arrive); barns without a bin sensor show "Barn not tracked".</div>`;
+  el.innerHTML = h;
+  bind();
+  bindSort(el, 'bh');
+  el.querySelector('#bhBarn').onchange = (e) => { S.bh.barn = e.target.value; renderBatches(); };
+  el.querySelector('#bhRec').onchange = (e) => { S.bh.recipe = e.target.value; renderBatches(); };
+  const qi = el.querySelector('#bhQ');
+  qi.oninput = (e) => { S.bh.q = e.target.value; const pos = e.target.selectionStart; renderBatches(); const n = document.getElementById('bhQ'); n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* ignore */ } };
+}
+
 function renderNotes() {
   const el = document.getElementById('p-notes');
   const bm = D.binmaster || {}, ap = D.ap || {}, bt = D.barntools || {};
@@ -1554,6 +1756,7 @@ function renderNotes() {
       if (iv.unmatchedRecs.length) items.push('doForms groups with no active FoxPro barn (ignored): ' + iv.unmatchedRecs.join(', ') + '.');
     }
   }
+  items.push('Batch history: read live from the batching system (Supabase schema batcher_mirror: order_hst, batch_hst, formula, equipment) when the tab is opened; the schema must be listed under Exposed schemas in the Supabase Data API settings. Pounds batched come from the FoxPro ticket (equal to the sum of the ingredients weighed in the batching system); delivery status is looked up from the Batch vs delivery check by ticket number.');
   items.push('Location 12 (Schaap South), the nurseries and any location without a bin scale have no vendor data; their rate comes from mill deliveries.');
   items.push('BinMaster and BarnTools sync every 15 minutes (GitHub Actions); AP syncs once a day. A level can be a little old (up to ~24 h for AP), so it is rolled forward using the eating rate and any mill tickets since. Mixed feed that has not yet been seen arriving in a bin is shown as "on the way" and counted as arriving (not as a delivery still to order). Schaap loads can wait up to ' + (ROUTE_GROUPS[0].maxSitH / 24) + ' days on the trailer. Barns without a sensor assume ' + ARRIVAL_LAG_H + ' h after mixing, unless their typical delay is longer.');
   items.push('Scale consumption is bucketed by UTC day (the existing sync convention), so a "day" runs 7 pm–7 pm Central.');
@@ -1567,6 +1770,7 @@ function renderNotes() {
 function showTab(p) {
   document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.p === p));
   document.querySelectorAll('.panel').forEach((x) => x.classList.toggle('on', x.id === 'p-' + p));
+  if (p === 'batches') { ensureBatches(); renderBatches(); }
 }
 function bindUI() {
   document.getElementById('tabs').addEventListener('click', (e) => {
@@ -1583,7 +1787,10 @@ async function load() {
   NOW = Date.now();
   D = await loadAll();
   lastLoad = Date.now();
+  const bhOn = document.getElementById('p-batches').classList.contains('on');
+  BH.raw = null; BH.key = null; BH.err = null;      // the batching history is re-read on reload
   render();
+  if (bhOn) ensureBatches();
   showAuto();
 }
 
@@ -1602,7 +1809,7 @@ async function autoRefresh() {
     const nd = await loadAll();
     // keep what is on screen if the refresh came back empty (network blip)
     const ok = nd && nd.errors.length === 0 && (nd.bins || []).length;
-    if (ok) { D = nd; NOW = Date.now(); lastLoad = Date.now(); render(); showAuto(); }
+    if (ok) { D = nd; NOW = Date.now(); lastLoad = Date.now(); render(); if (document.getElementById('p-batches').classList.contains('on')) ensureBatches(); showAuto(); }
     else showAuto('Auto-refresh failed, showing the last good data · will retry');
   } catch (e) { showAuto('Auto-refresh failed, showing the last good data · will retry'); }
   autoBusy = false;
@@ -1612,7 +1819,7 @@ function startAuto() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) autoRefresh(); });
 }
 
-window.FeedLogistics = { S, showTab, openChart, init, bindUI, load, render, buildModel, plan, rangeKeys, ctToEpoch, ctKey, addDays,
+window.FeedLogistics = { S, showTab, ensureBatches, renderBatches, _bh() { return BH; }, openChart, init, bindUI, load, render, buildModel, plan, rangeKeys, ctToEpoch, ctKey, addDays,
   _set(d, now) { D = d; if (now) NOW = now; }, _auto: autoRefresh, _age(ms) { lastLoad = Date.now() - ms; }, _model() { return M; } };
 if (!window.__FL_NO_AUTO) init();
 })();
